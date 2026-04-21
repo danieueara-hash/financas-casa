@@ -154,15 +154,54 @@ function AuthScreen(){
   )
 }
 
+// ── helpers fatura ────────────────────────────────────────────────────────────
+function getCardInvoices(allTxns, cards, month) {
+  // Para cada cartão, calcula a fatura do mês:
+  // transações cujo ciclo de fechamento resulta em vencimento neste mês
+  const [y, mo] = month.split("-").map(Number)
+  const invoices = []
+  cards.forEach(card => {
+    const cd = card.closing_day  // dia fechamento
+    const dd = card.due_day      // dia vencimento
+    // Transações que caem na fatura com vencimento em `month`:
+    // Se dia_tx <= cd  → vencimento no mesmo mês da tx
+    // Se dia_tx > cd   → vencimento no mês seguinte da tx
+    const txsInFatura = allTxns.filter(t => {
+      if (!t.card_id || t.card_id !== card.id) return false
+      if (t.type !== "expense") return false
+      const tDate = new Date(t.date + "T12:00:00")
+      const tDay = tDate.getDate()
+      const tMo = tDate.getMonth() + 1
+      const tY = tDate.getFullYear()
+      // mês de vencimento desta transação
+      let dueY = tY, dueMo = tMo
+      if (tDay > cd) { dueMo += 1; if (dueMo > 12) { dueMo = 1; dueY += 1 } }
+      return dueY === y && dueMo === mo
+    })
+    if (txsInFatura.length === 0) return
+    const total = txsInFatura.reduce((s, t) => s + t.amount, 0)
+    const allPaid = txsInFatura.every(t => t.status === "paid")
+    const dueDate = `${String(y).padStart(4,"0")}-${String(mo).padStart(2,"0")}-${String(dd).padStart(2,"0")}`
+    invoices.push({ card, total, allPaid, dueDate, txs: txsInFatura })
+  })
+  return invoices
+}
+
 // ── DASHBOARD ──────────────────────────────────────────────────────────────────
 function Dashboard({mTxns,allCats,cards,txns,month,onToggle}){
   const getCat=id=>allCats.find(c=>c.id===id)
   const income=mTxns.filter(t=>t.type==="income"&&t.status==="received").reduce((s,t)=>s+t.amount,0)
   const expense=mTxns.filter(t=>t.type==="expense"&&t.status==="paid").reduce((s,t)=>s+t.amount,0)
   const bal=income-expense
-  const pendExp=mTxns.filter(t=>t.type==="expense"&&t.status==="pending")
+
+  // Despesas avulsas (sem cartão) pendentes
+  const pendExpAvulso=mTxns.filter(t=>t.type==="expense"&&t.status==="pending"&&!t.card_id)
+  // Faturas de cartão do mês
+  const cardInvoices=useMemo(()=>getCardInvoices(txns,cards,month),[txns,cards,month])
+  const pendingInvoices=cardInvoices.filter(inv=>!inv.allPaid)
+
   const pendInc=mTxns.filter(t=>t.type==="income"&&t.status==="pending")
-  const pendTotal=pendExp.reduce((s,t)=>s+t.amount,0)
+  const pendTotal=pendExpAvulso.reduce((s,t)=>s+t.amount,0)+pendingInvoices.reduce((s,inv)=>s+inv.total,0)
   const next=useMemo(()=>getNextMonthProjection(txns,month),[txns,month])
 
   const catChart=useMemo(()=>{
@@ -269,39 +308,81 @@ function Dashboard({mTxns,allCats,cards,txns,month,onToggle}){
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        {[
-          {title:"⏳ Contas a Pagar",items:pendExp,color:"#EF4444"},
-          {title:"🟢 Receitas a Receber",items:pendInc,color:"#10B981"},
-        ].map(({title,items,color})=>(
-          <div key={title} className="bg-white rounded-2xl p-5 shadow-sm">
-            <div className="flex items-center gap-2 mb-3">
-              <p className="text-sm font-semibold text-gray-800">{title}</p>
-              <span className="text-xs px-2 py-0.5 rounded-full bg-gray-100 text-gray-500">{items.length}</span>
-            </div>
-            {items.length===0?<p className="text-sm text-gray-400 text-center py-4">Tudo em dia ✅</p>:(
-              <div className="space-y-1.5" style={{maxHeight:170,overflowY:"auto"}}>
-                {items.map(t=>{const cat=getCat(t.category_id);return(
-                  <div key={t.id} className="flex items-center justify-between p-2 rounded-xl hover:bg-gray-50 group">
-                    <div className="flex items-center gap-2">
-                      <span className="text-lg">{cat?.emoji||"📦"}</span>
-                      <div>
-                        <div className="flex items-center gap-1">
-                          <p className="text-xs font-semibold text-gray-800">{t.description}</p>
-                          {t.recurrent&&<span className="text-xs px-1 rounded" style={{background:"#ECFDF5",color:"#10B981"}}>🔁</span>}
-                        </div>
-                        <p className="text-xs text-gray-400">{Dt(t.date)}</p>
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <span className="text-sm font-bold" style={{color}}>{R(t.amount)}</span>
-                      <button onClick={()=>onToggle(t)} className="p-1 rounded-lg hover:bg-emerald-50 text-transparent group-hover:text-emerald-400 cursor-pointer">✓</button>
+        {/* Contas a pagar */}
+        <div className="bg-white rounded-2xl p-5 shadow-sm">
+          <div className="flex items-center gap-2 mb-3">
+            <p className="text-sm font-semibold text-gray-800">⏳ Contas a Pagar</p>
+            <span className="text-xs px-2 py-0.5 rounded-full bg-gray-100 text-gray-500">{pendExpAvulso.length+pendingInvoices.length}</span>
+          </div>
+          {pendExpAvulso.length===0&&pendingInvoices.length===0
+            ?<p className="text-sm text-gray-400 text-center py-4">Tudo em dia ✅</p>
+            :(
+            <div className="space-y-1.5" style={{maxHeight:200,overflowY:"auto"}}>
+              {/* Faturas de cartão pendentes */}
+              {pendingInvoices.map(inv=>(
+                <div key={inv.card.id} className="flex items-center justify-between p-2 rounded-xl hover:bg-gray-50">
+                  <div className="flex items-center gap-2">
+                    <div className="w-8 h-8 rounded-xl flex items-center justify-center text-sm font-bold flex-shrink-0" style={{background:inv.card.color+"20",color:inv.card.color}}>💳</div>
+                    <div>
+                      <p className="text-xs font-semibold text-gray-800">Fatura {inv.card.name}</p>
+                      <p className="text-xs text-gray-400">Vence {Dt(inv.dueDate)} • {inv.txs.length} compra{inv.txs.length>1?"s":""}</p>
                     </div>
                   </div>
-                )})}
-              </div>
-            )}
+                  <span className="text-sm font-bold text-red-500">{R(inv.total)}</span>
+                </div>
+              ))}
+              {/* Despesas avulsas pendentes */}
+              {pendExpAvulso.map(t=>{const cat=getCat(t.category_id);return(
+                <div key={t.id} className="flex items-center justify-between p-2 rounded-xl hover:bg-gray-50 group">
+                  <div className="flex items-center gap-2">
+                    <span className="text-lg">{cat?.emoji||"📦"}</span>
+                    <div>
+                      <div className="flex items-center gap-1">
+                        <p className="text-xs font-semibold text-gray-800">{t.description}</p>
+                        {t.recurrent&&<span className="text-xs px-1 rounded" style={{background:"#ECFDF5",color:"#10B981"}}>🔁</span>}
+                      </div>
+                      <p className="text-xs text-gray-400">{Dt(t.date)}</p>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm font-bold text-red-500">{R(t.amount)}</span>
+                    <button onClick={()=>onToggle(t)} className="p-1 rounded-lg hover:bg-emerald-50 text-transparent group-hover:text-emerald-400 cursor-pointer">✓</button>
+                  </div>
+                </div>
+              )})}
+            </div>
+          )}
+        </div>
+
+        {/* Receitas a receber */}
+        <div className="bg-white rounded-2xl p-5 shadow-sm">
+          <div className="flex items-center gap-2 mb-3">
+            <p className="text-sm font-semibold text-gray-800">🟢 Receitas a Receber</p>
+            <span className="text-xs px-2 py-0.5 rounded-full bg-gray-100 text-gray-500">{pendInc.length}</span>
           </div>
-        ))}
+          {pendInc.length===0?<p className="text-sm text-gray-400 text-center py-4">Tudo em dia ✅</p>:(
+            <div className="space-y-1.5" style={{maxHeight:200,overflowY:"auto"}}>
+              {pendInc.map(t=>{const cat=getCat(t.category_id);return(
+                <div key={t.id} className="flex items-center justify-between p-2 rounded-xl hover:bg-gray-50 group">
+                  <div className="flex items-center gap-2">
+                    <span className="text-lg">{cat?.emoji||"📦"}</span>
+                    <div>
+                      <div className="flex items-center gap-1">
+                        <p className="text-xs font-semibold text-gray-800">{t.description}</p>
+                        {t.recurrent&&<span className="text-xs px-1 rounded" style={{background:"#ECFDF5",color:"#10B981"}}>🔁</span>}
+                      </div>
+                      <p className="text-xs text-gray-400">{Dt(t.date)}</p>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm font-bold text-emerald-500">{R(t.amount)}</span>
+                    <button onClick={()=>onToggle(t)} className="p-1 rounded-lg hover:bg-emerald-50 text-transparent group-hover:text-emerald-400 cursor-pointer">✓</button>
+                  </div>
+                </div>
+              )})}
+            </div>
+          )}
+        </div>
       </div>
     </div>
   )
