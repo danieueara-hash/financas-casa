@@ -556,7 +556,7 @@ export default function App(){
   const [editCardId,setEditCardId]=useState(null)
   const [editCatId,setEditCatId]=useState(null)
 
-  const blankTx={type:"expense",description:"",amount:"",category_id:"",date:today(),status:"pending",card_id:"",recurrent:false,recurrence_type:"monthly"}
+  const blankTx={type:"expense",description:"",amount:"",category_id:"",date:today(),status:"pending",card_id:"",recurrent:false,recurrence_type:"monthly",installments:"1"}
   const [txF,setTxF]=useState(blankTx)
   const [cardF,setCardF]=useState({name:"",color:"#8B5CF6",limit_amount:"",closing_day:"",due_day:""})
   const [catF,setCatF]=useState({name:"",color:"#10B981",emoji:"💡",type:"expense"})
@@ -612,18 +612,35 @@ export default function App(){
 
   const saveTx=async()=>{
     if(!txF.description||!txF.amount||!txF.category_id) return
-    const payload={
-      user_id:userId, type:txF.type, description:txF.description,
-      amount:parseFloat(txF.amount), category_id:txF.category_id,
-      date:txF.date, status:txF.status, card_id:txF.card_id||null,
-      recurrent:txF.recurrent, recurrence_type:txF.recurrent?txF.recurrence_type:null,
-    }
+    const totalAmount=parseFloat(txF.amount)
+    const installments=txF.card_id&&!txF.recurrent?Math.max(1,parseInt(txF.installments)||1):1
+    const installmentAmount=parseFloat((totalAmount/installments).toFixed(2))
+    const installmentId=crypto.randomUUID() // agrupa parcelas
+
+    const rows=Array.from({length:installments},(_,i)=>{
+      const d=new Date(txF.date+"T12:00:00")
+      d.setMonth(d.getMonth()+i)
+      const dateStr=d.toISOString().split("T")[0]
+      return {
+        user_id:userId, type:txF.type, description: installments>1
+          ? `${txF.description} (${i+1}/${installments})`
+          : txF.description,
+        amount:installmentAmount, category_id:txF.category_id,
+        date:dateStr, status:txF.status, card_id:txF.card_id||null,
+        recurrent:txF.recurrent, recurrence_type:txF.recurrent?txF.recurrence_type:null,
+        installment_group:installments>1?installmentId:null,
+        installment_index:installments>1?i+1:null,
+        installment_total:installments>1?installments:null,
+      }
+    })
+
     if(editTxId){
+      const payload=rows[0]
       const {data}=await supabase.from("transactions").update(payload).eq("id",editTxId).select().single()
       if(data) setTxns(p=>p.map(t=>t.id===editTxId?data:t))
     } else {
-      const {data}=await supabase.from("transactions").insert(payload).select().single()
-      if(data){ setTxns(p=>[data,...p]); triggerAI(data) }
+      const {data}=await supabase.from("transactions").insert(rows).select()
+      if(data){ setTxns(p=>[...data,...p]); triggerAI(data[0]) }
     }
     setTxMod(false)
   }
@@ -788,12 +805,30 @@ export default function App(){
               {txF.type==="expense"?<><option value="pending">Pendente</option><option value="paid">Pago</option></>:<><option value="pending">A receber</option><option value="received">Recebido</option></>}
             </Sel>
             {txF.type==="expense"&&(
-              <Sel label="Cartão (opcional)" value={txF.card_id||""} onChange={e=>setTxF({...txF,card_id:e.target.value||null})}>
+              <Sel label="Cartão (opcional)" value={txF.card_id||""} onChange={e=>setTxF({...txF,card_id:e.target.value||null,installments:"1"})}>
                 <option value="">Débito / Dinheiro</option>
                 {cards.map(c=><option key={c.id} value={c.id}>💳 {c.name}</option>)}
               </Sel>
             )}
           </div>
+          {/* Parcelas — aparece só quando cartão selecionado */}
+          {txF.type==="expense"&&txF.card_id&&!txF.recurrent&&(
+            <div className="rounded-xl border border-blue-100 p-4 space-y-2" style={{background:"#EFF6FF"}}>
+              <p className="text-sm font-semibold text-blue-800">💳 Parcelamento</p>
+              <div className="grid grid-cols-2 gap-3 items-end">
+                <Sel label="Número de parcelas" value={txF.installments} onChange={e=>setTxF({...txF,installments:e.target.value})}>
+                  {Array.from({length:24},(_,i)=>i+1).map(n=><option key={n} value={n}>{n}x {n>1?`de ${R(parseFloat(txF.amount||0)/n)}`:"(à vista)"}</option>)}
+                </Sel>
+                <div className="pb-0.5">
+                  <p className="text-xs text-blue-600 font-medium">Valor por parcela</p>
+                  <p className="text-lg font-bold text-blue-800">{R(parseFloat(txF.amount||0)/Math.max(1,parseInt(txF.installments)||1))}</p>
+                </div>
+              </div>
+              {parseInt(txF.installments)>1&&(
+                <p className="text-xs text-blue-500">📅 Serão criadas {txF.installments} parcelas a partir de {new Date(txF.date+"T12:00:00").toLocaleDateString("pt-BR",{month:"long",year:"numeric"})}</p>
+              )}
+            </div>
+          )}
           {/* Recorrência */}
           <div className="rounded-xl border border-gray-200 p-4 space-y-3" style={{background:txF.recurrent?"#ECFDF5":"#F9FAFB"}}>
             <label className="flex items-center gap-3 cursor-pointer">
