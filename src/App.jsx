@@ -182,7 +182,7 @@ function Dashboard({mTxns,allCats,cards,txns,month,onToggle}){
 
   return(
     <div className="space-y-5">
-      <div className="grid grid-cols-4 gap-4">
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 md:gap-4">
         {kpis.map(k=>(
           <div key={k.label} className="bg-white rounded-2xl p-5 shadow-sm">
             <div className="flex justify-between items-center mb-3">
@@ -230,8 +230,8 @@ function Dashboard({mTxns,allCats,cards,txns,month,onToggle}){
         )}
       </div>
 
-      <div className="grid grid-cols-3 gap-5">
-        <div className="col-span-2 bg-white rounded-2xl p-5 shadow-sm">
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <div className="md:col-span-2 bg-white rounded-2xl p-5 shadow-sm">
           <p className="text-sm font-semibold text-gray-800 mb-4">Despesas por Categoria</p>
           {catChart.length===0?<p className="text-sm text-gray-400 text-center py-10">Sem despesas pagas</p>:(
             <div className="flex gap-6 items-center">
@@ -268,7 +268,7 @@ function Dashboard({mTxns,allCats,cards,txns,month,onToggle}){
         </div>
       </div>
 
-      <div className="grid grid-cols-2 gap-5">
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         {[
           {title:"⏳ Contas a Pagar",items:pendExp,color:"#EF4444"},
           {title:"🟢 Receitas a Receber",items:pendInc,color:"#10B981"},
@@ -711,8 +711,8 @@ export default function App(){
 
   return(
     <div className="min-h-screen flex" style={{background:"#F8FAFC"}}>
-      {/* Sidebar */}
-      <div className="w-56 flex-shrink-0 flex flex-col" style={{background:"#0F172A"}}>
+      {/* Sidebar — só desktop */}
+      <div className="hidden md:flex w-56 flex-shrink-0 flex-col" style={{background:"#0F172A"}}>
         <div className="p-5 border-b border-white/10">
           <div className="flex items-center gap-2.5">
             <div className="w-8 h-8 rounded-xl flex items-center justify-center text-base" style={{background:"linear-gradient(135deg,#10B981,#059669)"}}>💰</div>
@@ -739,21 +739,23 @@ export default function App(){
 
       {/* Main */}
       <div className="flex-1 flex flex-col min-w-0">
-        <div className="bg-white border-b border-gray-100 px-6 py-4 flex items-center justify-between">
-          <div>
-            <p className="text-base font-bold text-gray-900">{nav.find(n=>n.id===scr)?.icon} {nav.find(n=>n.id===scr)?.label}</p>
-            <p className="text-xs text-gray-400">{monthLabel(month)}</p>
+        {/* Header */}
+        <div className="bg-white border-b border-gray-100 px-4 md:px-6 py-3 md:py-4 flex items-center justify-between gap-3">
+          <div className="min-w-0">
+            <p className="text-sm md:text-base font-bold text-gray-900 truncate">{nav.find(n=>n.id===scr)?.icon} {nav.find(n=>n.id===scr)?.label}</p>
+            <p className="text-xs text-gray-400 hidden md:block">{monthLabel(month)}</p>
           </div>
-          <div className="flex items-center gap-3">
-            <div className="flex items-center gap-1 border border-gray-200 rounded-xl overflow-hidden">
-              <button onClick={()=>setMonth(shiftMonth(month,-1))} className="px-3 py-2 text-gray-400 hover:bg-gray-50 cursor-pointer">‹</button>
-              <span className="px-3 text-sm font-medium text-gray-700 whitespace-nowrap">{monthLabel(month)}</span>
-              <button onClick={()=>setMonth(shiftMonth(month,1))} className="px-3 py-2 text-gray-400 hover:bg-gray-50 cursor-pointer">›</button>
+          <div className="flex items-center gap-2">
+            <div className="flex items-center gap-0.5 border border-gray-200 rounded-xl overflow-hidden">
+              <button onClick={()=>setMonth(shiftMonth(month,-1))} className="px-2 md:px-3 py-2 text-gray-400 hover:bg-gray-50 cursor-pointer">‹</button>
+              <span className="px-2 md:px-3 text-xs md:text-sm font-medium text-gray-700 whitespace-nowrap">{monthLabel(month)}</span>
+              <button onClick={()=>setMonth(shiftMonth(month,1))} className="px-2 md:px-3 py-2 text-gray-400 hover:bg-gray-50 cursor-pointer">›</button>
             </div>
-            <GreenBtn onClick={openAddTx}>➕ Lançamento</GreenBtn>
+            <GreenBtn sm onClick={openAddTx}>➕ <span className="hidden md:inline">Lançamento</span></GreenBtn>
           </div>
         </div>
-        <div className="flex-1 p-6 overflow-auto">
+
+        <div className="flex-1 p-3 md:p-6 overflow-auto pb-20 md:pb-6">
           {dataLoading?(
             <div className="flex items-center justify-center h-64"><p className="text-gray-400 animate-pulse">Carregando dados...</p></div>
           ):(
@@ -868,6 +870,21 @@ export default function App(){
       )}
 
       {aiTip&&<AiTip tip={aiTip} loading={aiLoad} onClose={()=>setAiTip(null)}/>}
+
+      {/* Bottom nav — só mobile */}
+      <div className="md:hidden fixed bottom-0 left-0 right-0 bg-white border-t border-gray-100 flex z-40" style={{paddingBottom:"env(safe-area-inset-bottom)"}}>
+        {nav.map(n=>(
+          <button key={n.id} onClick={()=>setScr(n.id)} className="flex-1 flex flex-col items-center py-2.5 gap-0.5 cursor-pointer transition-colors"
+            style={{color:scr===n.id?"#10B981":"#9CA3AF"}}>
+            <span className="text-xl leading-none">{n.icon}</span>
+            <span className="text-xs font-medium">{n.label.split(" ")[0]}</span>
+          </button>
+        ))}
+        <button onClick={()=>supabase.auth.signOut()} className="flex-1 flex flex-col items-center py-2.5 gap-0.5 cursor-pointer text-gray-300">
+          <span className="text-xl leading-none">🚪</span>
+          <span className="text-xs font-medium">Sair</span>
+        </button>
+      </div>
     </div>
   )
 }
