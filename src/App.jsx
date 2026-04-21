@@ -89,7 +89,7 @@ const Sel = ({label,children,...p}) => (
 const Tabs = ({opts,val,onChange}) => (
   <div className="flex rounded-xl overflow-hidden border border-gray-200">
     {opts.map(([v,l])=>(
-      <button key={v} onClick={()=>onChange(v)} className="flex-1 py-2 text-sm font-medium transition-colors cursor-pointer"
+      <button key={v} onClick={()=>onChange(v)} className="flex-1 py-2 px-4 text-sm font-medium transition-colors cursor-pointer whitespace-nowrap"
         style={{background:val===v?"#0F172A":"white",color:val===v?"white":"#6B7280"}}>{l}</button>
     ))}
   </div>
