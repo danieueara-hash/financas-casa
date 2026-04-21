@@ -523,8 +523,8 @@ export default function App(){
   const [user,setUser]=useState(null);
   const [scr,setScr]=useState("dashboard");
   const [month,setMonth]=useState("2026-04");
-  const [txns,setTxns]=useState(DEMO_TXS);
-  const [cards,setCards]=useState(DEMO_CARDS);
+  const [txns,setTxns]=useState([])
+  const [cards,setCards]=useState([])
   const [cats,setCats]=useState(DEF_CATS);
 
   const [txMod,setTxMod]=useState(false);
