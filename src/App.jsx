@@ -266,11 +266,14 @@ function Dashboard({mTxns,allCats,cards,txns,month,onToggle}){
           <div className="mt-3 pt-3 border-t border-white/10">
             <p className="text-xs text-gray-400 mb-2">{next.txns.length} lançamentos previstos</p>
             <div className="flex flex-wrap gap-1.5">
-              {next.txns.slice(0,6).map(t=>{const cat=getCat(t.category_id);return(
-                <span key={t.id} className="text-xs px-2 py-0.5 rounded-full" style={{background:"rgba(255,255,255,0.1)",color:"#CBD5E1"}}>
-                  {cat?.emoji} {t.description} {R(t.amount)}
-                </span>
-              )})}
+              {next.txns.slice(0,6).map(t=>{
+                const cat=getCat(t.category_id)
+                return(
+                  <span key={t.id} className="text-xs px-2 py-0.5 rounded-full" style={{background:"rgba(255,255,255,0.1)",color:"#CBD5E1"}}>
+                    {t.isInvoice?"💳":(cat?.emoji||"📦")} {t.description} {R(t.amount)}
+                  </span>
+                )
+              })}
               {next.txns.length>6&&<span className="text-xs text-gray-500">+{next.txns.length-6} mais</span>}
             </div>
           </div>
