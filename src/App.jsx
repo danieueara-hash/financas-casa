@@ -155,36 +155,43 @@ function AuthScreen(){
 }
 
 // ── helpers fatura ────────────────────────────────────────────────────────────
-function getCardInvoices(allTxns, cards, month) {
-  // Para cada cartão, calcula a fatura do mês:
-  // transações cujo ciclo de fechamento resulta em vencimento neste mês
-  const [y, mo] = month.split("-").map(Number)
-  const invoices = []
-  cards.forEach(card => {
-    const cd = card.closing_day  // dia fechamento
-    const dd = card.due_day      // dia vencimento
-    // Transações que caem na fatura com vencimento em `month`:
-    // Se dia_tx <= cd  → vencimento no mesmo mês da tx
-    // Se dia_tx > cd   → vencimento no mês seguinte da tx
-    const txsInFatura = allTxns.filter(t => {
-      if (!t.card_id || t.card_id !== card.id) return false
-      if (t.type !== "expense") return false
-      const tDate = new Date(t.date + "T12:00:00")
-      const tDay = tDate.getDate()
-      const tMo = tDate.getMonth() + 1
-      const tY = tDate.getFullYear()
-      // mês de vencimento desta transação
-      let dueY = tY, dueMo = tMo
-      if (tDay > cd) { dueMo += 1; if (dueMo > 12) { dueMo = 1; dueY += 1 } }
-      return dueY === y && dueMo === mo
-    })
-    if (txsInFatura.length === 0) return
-    const total = txsInFatura.reduce((s, t) => s + t.amount, 0)
-    const allPaid = txsInFatura.every(t => t.status === "paid")
-    const dueDate = `${String(y).padStart(4,"0")}-${String(mo).padStart(2,"0")}-${String(dd).padStart(2,"0")}`
-    invoices.push({ card, total, allPaid, dueDate, txs: txsInFatura })
+// Dado uma transação e um cartão, retorna "YYYY-MM" do mês de vencimento dela
+function getInvoiceMonth(txDate, closingDay) {
+  const d = new Date(txDate + "T12:00:00")
+  const day = d.getDate()
+  // Se compra feita APÓS o fechamento → cai na fatura do mês seguinte
+  if (day > closingDay) {
+    const next = new Date(d.getFullYear(), d.getMonth() + 1, 1)
+    return `${next.getFullYear()}-${String(next.getMonth()+1).padStart(2,"0")}`
+  }
+  // Senão → cai na fatura do mesmo mês da compra
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`
+}
+
+// Retorna todas as faturas de todos os cartões agrupadas por mês de vencimento
+function getAllCardInvoices(allTxns, cards) {
+  const map = {} // key: "cardId_YYYY-MM"
+  allTxns.forEach(t => {
+    if (!t.card_id || t.type !== "expense") return
+    const card = cards.find(c => c.id === t.card_id)
+    if (!card) return
+    const cd = card.closing_day
+    const invMonth = getInvoiceMonth(t.date, cd)
+    const key = `${card.id}_${invMonth}`
+    if (!map[key]) {
+      const [y, mo] = invMonth.split("-").map(Number)
+      const dd = String(card.due_day).padStart(2,"0")
+      map[key] = {
+        key, card, invMonth,
+        dueDate: `${y}-${String(mo).padStart(2,"0")}-${dd}`,
+        txs: [], total: 0, allPaid: true
+      }
+    }
+    map[key].txs.push(t)
+    map[key].total += t.amount
+    if (t.status !== "paid") map[key].allPaid = false
   })
-  return invoices
+  return Object.values(map)
 }
 
 // ── DASHBOARD ──────────────────────────────────────────────────────────────────
@@ -194,12 +201,13 @@ function Dashboard({mTxns,allCats,cards,txns,month,onToggle}){
   const expense=mTxns.filter(t=>t.type==="expense"&&t.status==="paid").reduce((s,t)=>s+t.amount,0)
   const bal=income-expense
 
-  // Despesas avulsas (sem cartão) pendentes
-  const pendExpAvulso=mTxns.filter(t=>t.type==="expense"&&t.status==="pending"&&!t.card_id)
-  // Faturas de cartão do mês
-  const cardInvoices=useMemo(()=>getCardInvoices(txns,cards,month),[txns,cards,month])
+  // Faturas do mês atual (vencimento no mês sendo visualizado)
+  const allInvoices=useMemo(()=>getAllCardInvoices(txns,cards),[txns,cards])
+  const cardInvoices=useMemo(()=>allInvoices.filter(inv=>inv.invMonth===month),[allInvoices,month])
   const pendingInvoices=cardInvoices.filter(inv=>!inv.allPaid)
 
+  // Despesas avulsas (sem cartão) pendentes do mês
+  const pendExpAvulso=mTxns.filter(t=>t.type==="expense"&&t.status==="pending"&&!t.card_id)
   const pendInc=mTxns.filter(t=>t.type==="income"&&t.status==="pending")
   const pendTotal=pendExpAvulso.reduce((s,t)=>s+t.amount,0)+pendingInvoices.reduce((s,inv)=>s+inv.total,0)
   const next=useMemo(()=>getNextMonthProjection(txns,month),[txns,month])
@@ -445,11 +453,16 @@ function Transactions({mTxns,allCats,cards,onEdit,onDelete,onToggle}){
 }
 
 // ── CARDS ──────────────────────────────────────────────────────────────────────
-function CardsScreen({cards,mTxns,allCats,month,onAdd,onEdit,onDelete}){
+function CardsScreen({cards,txns,allCats,month,onAdd,onEdit,onDelete}){
   const [active,setActive]=useState(cards[0]?.id||null)
-  const stmnt=mTxns.filter(t=>t.card_id===active)
-  const stTotal=stmnt.reduce((s,t)=>s+t.amount,0)
-  const cardUsage=cards.map(c=>({...c,used:mTxns.filter(t=>t.card_id===c.id).reduce((s,t)=>s+t.amount,0)}))
+  const allInvoices=useMemo(()=>getAllCardInvoices(txns,cards),[txns,cards])
+  const invoice=useMemo(()=>allInvoices.find(inv=>inv.card.id===active&&inv.invMonth===month),[allInvoices,active,month])
+  const stmnt=invoice?.txs||[]
+  const stTotal=invoice?.total||0
+  const cardUsage=cards.map(c=>{
+    const inv=allInvoices.find(i=>i.card.id===c.id&&i.invMonth===month)
+    return{...c,used:inv?.total||0}
+  })
   return(
     <div className="space-y-5">
       <div className="flex items-center justify-between">
@@ -860,7 +873,7 @@ export default function App(){
             <>
               {scr==="dashboard"&&<Dashboard mTxns={mTxns} allCats={allCats} cards={cards} txns={txns} month={month} onToggle={toggleTx}/>}
               {scr==="transactions"&&<Transactions mTxns={mTxns} allCats={allCats} cards={cards} onEdit={openEditTx} onDelete={deleteTx} onToggle={toggleTx}/>}
-              {scr==="cards"&&<CardsScreen cards={cards} mTxns={mTxns} allCats={allCats} month={month} onAdd={openAddCard} onEdit={openEditCard} onDelete={deleteCard}/>}
+              {scr==="cards"&&<CardsScreen cards={cards} txns={txns} allCats={allCats} month={month} onAdd={openAddCard} onEdit={openEditCard} onDelete={deleteCard}/>}
               {scr==="categories"&&<CatsScreen cats={cats} onAdd={openAddCat} onEdit={openEditCat} onDelete={deleteCat}/>}
               {scr==="reports"&&<Reports txns={txns} cats={cats} month={month}/>}
             </>
