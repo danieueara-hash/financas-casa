@@ -1,11 +1,8 @@
 import { useState, useMemo, useEffect, useCallback } from "react"
 import { supabase } from "./lib/supabase"
-import {
-  BarChart, Bar, XAxis, YAxis, Tooltip,
-  ResponsiveContainer, PieChart, Pie, Cell
-} from "recharts"
+import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, PieChart, Pie, Cell } from "recharts"
 
-// ── HELPERS ───────────────────────────────────────────────────────────────────
+// ── HELPERS ────────────────────────────────────────────────────────────────────
 const MONTHS = ["Janeiro","Fevereiro","Março","Abril","Maio","Junho","Julho","Agosto","Setembro","Outubro","Novembro","Dezembro"]
 const R = v => (v||0).toLocaleString("pt-BR",{style:"currency",currency:"BRL"})
 const Dt = s => { try { return new Date(s+"T12:00:00").toLocaleDateString("pt-BR") } catch { return s } }
@@ -14,52 +11,144 @@ function monthLabel(m){ const [y,mo]=m.split("-").map(Number); return `${MONTHS[
 function shiftMonth(m,d){ const [y,mo]=m.split("-").map(Number); const dt=new Date(y,mo-1+d,1); return `${dt.getFullYear()}-${String(dt.getMonth()+1).padStart(2,"0")}` }
 
 const RECURRENCE_OPTS = [
-  {value:"monthly", label:"Mensal"},
-  {value:"weekly",  label:"Semanal"},
-  {value:"yearly",  label:"Anual"},
+  {value:"monthly",label:"Mensal"},
+  {value:"weekly", label:"Semanal"},
+  {value:"yearly", label:"Anual"},
 ]
 
 const DEF_CATS = [
   {name:"Alimentação",type:"expense",color:"#F59E0B",emoji:"🍽️"},
-  {name:"Moradia",type:"expense",color:"#3B82F6",emoji:"🏠"},
-  {name:"Transporte",type:"expense",color:"#8B5CF6",emoji:"🚗"},
-  {name:"Saúde",type:"expense",color:"#EF4444",emoji:"❤️"},
-  {name:"Lazer",type:"expense",color:"#EC4899",emoji:"🎮"},
-  {name:"Educação",type:"expense",color:"#06B6D4",emoji:"📚"},
-  {name:"Salário",type:"income",color:"#10B981",emoji:"💼"},
-  {name:"Freelance",type:"income",color:"#84CC16",emoji:"💻"},
-  {name:"Outros",type:"income",color:"#94A3B8",emoji:"✨"},
+  {name:"Moradia",    type:"expense",color:"#3B82F6",emoji:"🏠"},
+  {name:"Transporte", type:"expense",color:"#8B5CF6",emoji:"🚗"},
+  {name:"Saúde",      type:"expense",color:"#EF4444",emoji:"❤️"},
+  {name:"Lazer",      type:"expense",color:"#EC4899",emoji:"🎮"},
+  {name:"Educação",   type:"expense",color:"#06B6D4",emoji:"📚"},
+  {name:"Salário",    type:"income", color:"#10B981",emoji:"💼"},
+  {name:"Freelance",  type:"income", color:"#84CC16",emoji:"💻"},
+  {name:"Outros",     type:"income", color:"#94A3B8",emoji:"✨"},
 ]
 
-// ── helpers: gerar lançamentos recorrentes para um mês ────────────────────────
-function getMonthTxns(allTxns, month) {
-  const real = allTxns.filter(t => t.date && t.date.startsWith(month))
+// ── CORE: lançamentos recorrentes projetados para um mês ───────────────────────
+function getProjectedRecurrents(allTxns, month) {
   const projected = []
-  allTxns.filter(t => t.recurrent && t.date && t.date.slice(0,7) < month).forEach(t => {
-    if (t.recurrence_type === "monthly") {
-      if (!allTxns.some(x => x.origin_id === t.id && x.date && x.date.startsWith(month))) {
-        const day = t.date.slice(8,10)
-        projected.push({...t, id:`proj_${t.id}_${month}`, date:`${month}-${day}`, status:"pending", projected:true, origin_id:t.id})
+  allTxns
+    .filter(t => t.recurrent && t.date && t.date.slice(0,7) < month)
+    .forEach(t => {
+      const alreadyExists = allTxns.some(x =>
+        (x.origin_id === t.id || x.id === t.id) && x.date && x.date.startsWith(month)
+      )
+      if (alreadyExists) return
+      if (t.recurrence_type === "monthly") {
+        projected.push({...t,
+          id: `proj_${t.id}_${month}`,
+          date: `${month}-${t.date.slice(8,10)}`,
+          status: "pending", projected: true, origin_id: t.id
+        })
+      } else if (t.recurrence_type === "yearly" && t.date.slice(5,7) === month.slice(5,7)) {
+        projected.push({...t,
+          id: `proj_${t.id}_${month}`,
+          date: `${month}-${t.date.slice(8,10)}`,
+          status: "pending", projected: true, origin_id: t.id
+        })
       }
-    } else if (t.recurrence_type === "yearly") {
-      const tMonth = t.date.slice(5,7)
-      if (month.slice(5,7) === tMonth && month > t.date.slice(0,7)) {
-        if (!allTxns.some(x => x.origin_id === t.id && x.date && x.date.startsWith(month))) {
-          const day = t.date.slice(8,10)
-          projected.push({...t, id:`proj_${t.id}_${month}`, date:`${month}-${day}`, status:"pending", projected:true, origin_id:t.id})
-        }
-      }
-    }
-  })
-  return [...real, ...projected]
+    })
+  return projected
 }
 
-function getNextMonthProjection(allTxns, currentMonth) {
-  const nextMonth = shiftMonth(currentMonth, 1)
-  const nextTxns = getMonthTxns(allTxns, nextMonth)
-  const inc = nextTxns.filter(t=>t.type==="income").reduce((s,t)=>s+t.amount,0)
-  const exp = nextTxns.filter(t=>t.type==="expense").reduce((s,t)=>s+t.amount,0)
-  return { inc, exp, bal: inc - exp, month: nextMonth, txns: nextTxns }
+// Retorna transações reais do mês + projeções recorrentes
+function getMonthTxns(allTxns, month) {
+  const real = allTxns.filter(t => t.date && t.date.startsWith(month))
+  return [...real, ...getProjectedRecurrents(allTxns, month)]
+}
+
+// Dado uma transação e o dia de fechamento do cartão, retorna "YYYY-MM" da fatura
+function getInvoiceMonth(txDate, closingDay) {
+  const d   = new Date(txDate + "T12:00:00")
+  const day = d.getDate()
+  if (day > closingDay) {
+    const next = new Date(d.getFullYear(), d.getMonth() + 1, 1)
+    return `${next.getFullYear()}-${String(next.getMonth()+1).padStart(2,"0")}`
+  }
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`
+}
+
+// Agrupa TODAS as transações de cartão em faturas (apenas transações reais, não projetadas)
+function getAllCardInvoices(allTxns, cards) {
+  const map = {}
+  allTxns
+    .filter(t => t.card_id && t.type === "expense" && !t.projected)
+    .forEach(t => {
+      const card = cards.find(c => c.id === t.card_id)
+      if (!card) return
+      const invMonth = getInvoiceMonth(t.date, card.closing_day)
+      const key = `${card.id}_${invMonth}`
+      if (!map[key]) {
+        const [y, mo] = invMonth.split("-").map(Number)
+        map[key] = {
+          key, card, invMonth,
+          dueDate: `${y}-${String(mo).padStart(2,"0")}-${String(card.due_day).padStart(2,"0")}`,
+          txs: [], total: 0, allPaid: true
+        }
+      }
+      map[key].txs.push(t)
+      map[key].total = parseFloat((map[key].total + t.amount).toFixed(2))
+      if (t.status !== "paid") map[key].allPaid = false
+    })
+  return Object.values(map)
+}
+
+// ── FUNÇÃO CENTRAL: resume um mês (usada por Dashboard E Projeção) ─────────────
+function computeMonthSummary(allTxns, cards, month) {
+  const mTxns   = getMonthTxns(allTxns, month)
+  const invoices = getAllCardInvoices(allTxns, cards).filter(inv => inv.invMonth === month)
+
+  // KPIs realizados
+  const incomeReceived = mTxns
+    .filter(t => t.type==="income" && t.status==="received")
+    .reduce((s,t) => s+t.amount, 0)
+  const expensePaid = mTxns
+    .filter(t => t.type==="expense" && t.status==="paid" && !t.card_id)
+    .reduce((s,t) => s+t.amount, 0)
+  const cardPaid = invoices
+    .filter(inv => inv.allPaid)
+    .reduce((s,inv) => s+inv.total, 0)
+
+  // Pendentes
+  const pendingAvulso   = mTxns.filter(t => t.type==="expense" && t.status==="pending" && !t.card_id)
+  const pendingInvoices = invoices.filter(inv => !inv.allPaid)
+  const pendingIncome   = mTxns.filter(t => t.type==="income" && t.status==="pending")
+  const pendingTotal    = pendingAvulso.reduce((s,t)=>s+t.amount,0)
+                        + pendingInvoices.reduce((s,inv)=>s+inv.total,0)
+
+  // Projeção total do mês (avulsos + todas faturas)
+  const totalExpenses = mTxns
+    .filter(t => t.type==="expense" && !t.card_id)
+    .reduce((s,t) => s+t.amount, 0)
+    + invoices.reduce((s,inv) => s+inv.total, 0)
+  const totalIncome = mTxns
+    .filter(t => t.type==="income")
+    .reduce((s,t) => s+t.amount, 0)
+
+  // Chips de preview (para o card de projeção)
+  const invoiceItems = invoices.map(inv => ({
+    id: `inv_${inv.key}`, type:"expense",
+    description: `Fatura ${inv.card.name}`,
+    amount: inv.total, isInvoice:true,
+  }))
+  const previewItems = [
+    ...mTxns.filter(t => !t.card_id),
+    ...invoiceItems,
+  ]
+
+  return {
+    incomeReceived,
+    expensePaid: expensePaid + cardPaid,
+    balance: incomeReceived - (expensePaid + cardPaid),
+    pendingAvulso, pendingInvoices, pendingIncome, pendingTotal,
+    totalExpenses, totalIncome,
+    projectedBalance: totalIncome - totalExpenses,
+    mTxns, invoices, previewItems,
+  }
 }
 
 // ── UI PRIMITIVES ──────────────────────────────────────────────────────────────
@@ -112,17 +201,13 @@ function AuthScreen(){
   const [f,setF]=useState({name:"",email:"",password:""})
   const [err,setErr]=useState("")
   const [loading,setLoading]=useState(false)
-
   const handle = async () => {
     if(!f.email||!f.password){setErr("Preencha todos os campos");return}
     if(tab==="signup"&&!f.name){setErr("Informe seu nome");return}
     setLoading(true); setErr("")
     try {
       if(tab==="signup"){
-        const {error}=await supabase.auth.signUp({
-          email:f.email, password:f.password,
-          options:{data:{name:f.name}}
-        })
+        const {error}=await supabase.auth.signUp({email:f.email,password:f.password,options:{data:{name:f.name}}})
         if(error) throw error
       } else {
         const {error}=await supabase.auth.signInWithPassword({email:f.email,password:f.password})
@@ -131,7 +216,6 @@ function AuthScreen(){
     } catch(e){ setErr(e.message||"Erro ao autenticar") }
     setLoading(false)
   }
-
   return(
     <div className="min-h-screen flex items-center justify-center" style={{background:"linear-gradient(135deg,#0F172A 0%,#1E293B 60%,#065F46 100%)"}}>
       <div className="bg-white rounded-3xl shadow-2xl p-8 w-full max-w-sm">
@@ -154,81 +238,43 @@ function AuthScreen(){
   )
 }
 
-// ── helpers fatura ────────────────────────────────────────────────────────────
-// Dado uma transação e um cartão, retorna "YYYY-MM" do mês de vencimento dela
-function getInvoiceMonth(txDate, closingDay) {
-  const d = new Date(txDate + "T12:00:00")
-  const day = d.getDate()
-  // Se compra feita APÓS o fechamento → cai na fatura do mês seguinte
-  if (day > closingDay) {
-    const next = new Date(d.getFullYear(), d.getMonth() + 1, 1)
-    return `${next.getFullYear()}-${String(next.getMonth()+1).padStart(2,"0")}`
-  }
-  // Senão → cai na fatura do mesmo mês da compra
-  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`
-}
-
-// Retorna todas as faturas de todos os cartões agrupadas por mês de vencimento
-function getAllCardInvoices(allTxns, cards) {
-  const map = {} // key: "cardId_YYYY-MM"
-  allTxns.forEach(t => {
-    if (!t.card_id || t.type !== "expense") return
-    const card = cards.find(c => c.id === t.card_id)
-    if (!card) return
-    const cd = card.closing_day
-    const invMonth = getInvoiceMonth(t.date, cd)
-    const key = `${card.id}_${invMonth}`
-    if (!map[key]) {
-      const [y, mo] = invMonth.split("-").map(Number)
-      const dd = String(card.due_day).padStart(2,"0")
-      map[key] = {
-        key, card, invMonth,
-        dueDate: `${y}-${String(mo).padStart(2,"0")}-${dd}`,
-        txs: [], total: 0, allPaid: true
-      }
-    }
-    map[key].txs.push(t)
-    map[key].total += t.amount
-    if (t.status !== "paid") map[key].allPaid = false
-  })
-  return Object.values(map)
-}
-
 // ── DASHBOARD ──────────────────────────────────────────────────────────────────
-function Dashboard({mTxns,allCats,cards,txns,month,onToggle}){
-  const getCat=id=>allCats.find(c=>c.id===id)
-  const income=mTxns.filter(t=>t.type==="income"&&t.status==="received").reduce((s,t)=>s+t.amount,0)
-  const expense=mTxns.filter(t=>t.type==="expense"&&t.status==="paid").reduce((s,t)=>s+t.amount,0)
-  const bal=income-expense
+function Dashboard({summary,nextSummary,nextMonth,allCats,cards,onToggle}){
+  const {incomeReceived,expensePaid,balance,pendingAvulso,pendingInvoices,pendingIncome,pendingTotal,previewItems:currPreview} = summary
+  const getCat = id => allCats.find(c=>c.id===id)
 
-  // Faturas do mês atual (vencimento no mês sendo visualizado)
-  const allInvoices=useMemo(()=>getAllCardInvoices(txns,cards),[txns,cards])
-  const cardInvoices=useMemo(()=>allInvoices.filter(inv=>inv.invMonth===month),[allInvoices,month])
-  const pendingInvoices=cardInvoices.filter(inv=>!inv.allPaid)
-
-  // Despesas avulsas (sem cartão) pendentes do mês
-  const pendExpAvulso=mTxns.filter(t=>t.type==="expense"&&t.status==="pending"&&!t.card_id)
-  const pendInc=mTxns.filter(t=>t.type==="income"&&t.status==="pending")
-  const pendTotal=pendExpAvulso.reduce((s,t)=>s+t.amount,0)+pendingInvoices.reduce((s,inv)=>s+inv.total,0)
-  const next=useMemo(()=>getNextMonthProjection(txns,month),[txns,month])
-
-  const catChart=useMemo(()=>{
+  const catChart = useMemo(()=>{
     const g={}
-    mTxns.filter(t=>t.type==="expense"&&t.status==="paid").forEach(t=>{g[t.category_id]=(g[t.category_id]||0)+t.amount})
-    return Object.entries(g).map(([id,v])=>{const c=getCat(id);return{name:c?.name||"Outros",value:v,color:c?.color||"#94A3B8",emoji:c?.emoji||"📦"}}).sort((a,b)=>b.value-a.value)
-  },[mTxns])
+    summary.mTxns.filter(t=>t.type==="expense"&&t.status==="paid"&&!t.card_id).forEach(t=>{g[t.category_id]=(g[t.category_id]||0)+t.amount})
+    summary.invoices.filter(inv=>inv.allPaid).forEach(inv=>{
+      const key=`card_${inv.card.id}`
+      g[key]=(g[key]||0)+inv.total
+    })
+    return Object.entries(g).map(([id,v])=>{
+      if(id.startsWith("card_")){
+        const card=cards.find(c=>`card_${c.id}`===id)
+        return{name:`Fatura ${card?.name||"Cartão"}`,value:v,color:card?.color||"#8B5CF6",emoji:"💳"}
+      }
+      const c=getCat(id)
+      return{name:c?.name||"Outros",value:v,color:c?.color||"#94A3B8",emoji:c?.emoji||"📦"}
+    }).sort((a,b)=>b.value-a.value)
+  },[summary])
 
-  const cardUsage=cards.map(c=>({...c,used:mTxns.filter(t=>t.card_id===c.id).reduce((s,t)=>s+t.amount,0)}))
+  const cardUsage = useMemo(()=>cards.map(c=>{
+    const inv=summary.invoices.find(i=>i.card.id===c.id)
+    return{...c,used:inv?.total||0}
+  }),[summary,cards])
 
   const kpis=[
-    {label:"Receitas",value:income,color:"#10B981",bg:"#ECFDF5",icon:"📈"},
-    {label:"Despesas",value:expense,color:"#EF4444",bg:"#FEF2F2",icon:"📉"},
-    {label:"Saldo Atual",value:bal,color:bal>=0?"#10B981":"#EF4444",bg:bal>=0?"#ECFDF5":"#FEF2F2",icon:"💰"},
-    {label:"A Pagar",value:pendTotal,color:"#F59E0B",bg:"#FFFBEB",icon:"⏳"},
+    {label:"Receitas",    value:incomeReceived, color:"#10B981",bg:"#ECFDF5",icon:"📈"},
+    {label:"Despesas",    value:expensePaid,    color:"#EF4444",bg:"#FEF2F2",icon:"📉"},
+    {label:"Saldo Atual", value:balance,        color:balance>=0?"#10B981":"#EF4444",bg:balance>=0?"#ECFDF5":"#FEF2F2",icon:"💰"},
+    {label:"A Pagar",     value:pendingTotal,   color:"#F59E0B",bg:"#FFFBEB",icon:"⏳"},
   ]
 
   return(
     <div className="space-y-5">
+      {/* KPIs */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3 md:gap-4">
         {kpis.map(k=>(
           <div key={k.label} className="bg-white rounded-2xl p-5 shadow-sm">
@@ -241,20 +287,20 @@ function Dashboard({mTxns,allCats,cards,txns,month,onToggle}){
         ))}
       </div>
 
-      {/* Projeção */}
+      {/* Projeção próximo mês */}
       <div className="rounded-2xl p-5 shadow-sm" style={{background:"linear-gradient(135deg,#0F172A,#1e3a5f)"}}>
         <div className="flex items-center justify-between mb-4">
           <div>
-            <p className="text-xs text-gray-400 font-medium mb-0.5">Projeção — {monthLabel(next.month)}</p>
-            <p className="text-white text-sm font-semibold">Baseado em lançamentos recorrentes</p>
+            <p className="text-xs text-gray-400 font-medium mb-0.5">Projeção — {monthLabel(nextMonth)}</p>
+            <p className="text-white text-sm font-semibold">Parcelas + Recorrentes + Faturas</p>
           </div>
           <span className="text-2xl">🔮</span>
         </div>
-        <div className="grid grid-cols-3 gap-4">
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
           {[
-            {label:"Receitas previstas",value:next.inc,color:"#34D399"},
-            {label:"Despesas previstas",value:next.exp,color:"#F87171"},
-            {label:"Saldo projetado",value:next.bal,color:next.bal>=0?"#34D399":"#F87171"},
+            {label:"Receitas previstas",  value:nextSummary.totalIncome,      color:"#34D399"},
+            {label:"Despesas previstas",  value:nextSummary.totalExpenses,    color:"#F87171"},
+            {label:"Saldo projetado",     value:nextSummary.projectedBalance, color:nextSummary.projectedBalance>=0?"#34D399":"#F87171"},
           ].map(item=>(
             <div key={item.label} className="rounded-xl p-3" style={{background:"rgba(255,255,255,0.07)"}}>
               <p className="text-xs text-gray-400 mb-1">{item.label}</p>
@@ -262,11 +308,11 @@ function Dashboard({mTxns,allCats,cards,txns,month,onToggle}){
             </div>
           ))}
         </div>
-        {next.txns.length>0&&(
+        {nextSummary.previewItems.length>0&&(
           <div className="mt-3 pt-3 border-t border-white/10">
-            <p className="text-xs text-gray-400 mb-2">{next.txns.length} lançamentos previstos</p>
+            <p className="text-xs text-gray-400 mb-2">{nextSummary.previewItems.length} lançamentos previstos</p>
             <div className="flex flex-wrap gap-1.5">
-              {next.txns.slice(0,6).map(t=>{
+              {nextSummary.previewItems.slice(0,6).map(t=>{
                 const cat=getCat(t.category_id)
                 return(
                   <span key={t.id} className="text-xs px-2 py-0.5 rounded-full" style={{background:"rgba(255,255,255,0.1)",color:"#CBD5E1"}}>
@@ -274,12 +320,13 @@ function Dashboard({mTxns,allCats,cards,txns,month,onToggle}){
                   </span>
                 )
               })}
-              {next.txns.length>6&&<span className="text-xs text-gray-500">+{next.txns.length-6} mais</span>}
+              {nextSummary.previewItems.length>6&&<span className="text-xs text-gray-500">+{nextSummary.previewItems.length-6} mais</span>}
             </div>
           </div>
         )}
       </div>
 
+      {/* Gráfico + Cartões */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
         <div className="md:col-span-2 bg-white rounded-2xl p-5 shadow-sm">
           <p className="text-sm font-semibold text-gray-800 mb-4">Despesas por Categoria</p>
@@ -318,22 +365,22 @@ function Dashboard({mTxns,allCats,cards,txns,month,onToggle}){
         </div>
       </div>
 
+      {/* Pendentes */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        {/* Contas a pagar */}
+        {/* Contas a Pagar */}
         <div className="bg-white rounded-2xl p-5 shadow-sm">
           <div className="flex items-center gap-2 mb-3">
             <p className="text-sm font-semibold text-gray-800">⏳ Contas a Pagar</p>
-            <span className="text-xs px-2 py-0.5 rounded-full bg-gray-100 text-gray-500">{pendExpAvulso.length+pendingInvoices.length}</span>
+            <span className="text-xs px-2 py-0.5 rounded-full bg-gray-100 text-gray-500">{pendingAvulso.length+pendingInvoices.length}</span>
           </div>
-          {pendExpAvulso.length===0&&pendingInvoices.length===0
+          {pendingAvulso.length===0&&pendingInvoices.length===0
             ?<p className="text-sm text-gray-400 text-center py-4">Tudo em dia ✅</p>
             :(
             <div className="space-y-1.5" style={{maxHeight:200,overflowY:"auto"}}>
-              {/* Faturas de cartão pendentes */}
               {pendingInvoices.map(inv=>(
-                <div key={inv.card.id} className="flex items-center justify-between p-2 rounded-xl hover:bg-gray-50 group">
+                <div key={inv.key} className="flex items-center justify-between p-2 rounded-xl hover:bg-gray-50 group">
                   <div className="flex items-center gap-2">
-                    <div className="w-8 h-8 rounded-xl flex items-center justify-center text-sm font-bold flex-shrink-0" style={{background:inv.card.color+"20",color:inv.card.color}}>💳</div>
+                    <div className="w-8 h-8 rounded-xl flex items-center justify-center flex-shrink-0" style={{background:inv.card.color+"20"}}>💳</div>
                     <div>
                       <p className="text-xs font-semibold text-gray-800">Fatura {inv.card.name}</p>
                       <p className="text-xs text-gray-400">Vence {Dt(inv.dueDate)} • {inv.txs.length} compra{inv.txs.length>1?"s":""}</p>
@@ -341,13 +388,11 @@ function Dashboard({mTxns,allCats,cards,txns,month,onToggle}){
                   </div>
                   <div className="flex items-center gap-2">
                     <span className="text-sm font-bold text-red-500">{R(inv.total)}</span>
-                    <button onClick={()=>inv.txs.forEach(t=>onToggle(t))}
-                      className="p-1 rounded-lg hover:bg-emerald-50 text-transparent group-hover:text-emerald-400 cursor-pointer transition-colors">✓</button>
+                    <button onClick={()=>inv.txs.forEach(t=>onToggle(t))} className="p-1 rounded-lg hover:bg-emerald-50 text-transparent group-hover:text-emerald-400 cursor-pointer">✓</button>
                   </div>
                 </div>
               ))}
-              {/* Despesas avulsas pendentes */}
-              {pendExpAvulso.map(t=>{const cat=getCat(t.category_id);return(
+              {pendingAvulso.map(t=>{const cat=getCat(t.category_id);return(
                 <div key={t.id} className="flex items-center justify-between p-2 rounded-xl hover:bg-gray-50 group">
                   <div className="flex items-center gap-2">
                     <span className="text-lg">{cat?.emoji||"📦"}</span>
@@ -369,15 +414,15 @@ function Dashboard({mTxns,allCats,cards,txns,month,onToggle}){
           )}
         </div>
 
-        {/* Receitas a receber */}
+        {/* Receitas a Receber */}
         <div className="bg-white rounded-2xl p-5 shadow-sm">
           <div className="flex items-center gap-2 mb-3">
             <p className="text-sm font-semibold text-gray-800">🟢 Receitas a Receber</p>
-            <span className="text-xs px-2 py-0.5 rounded-full bg-gray-100 text-gray-500">{pendInc.length}</span>
+            <span className="text-xs px-2 py-0.5 rounded-full bg-gray-100 text-gray-500">{pendingIncome.length}</span>
           </div>
-          {pendInc.length===0?<p className="text-sm text-gray-400 text-center py-4">Tudo em dia ✅</p>:(
+          {pendingIncome.length===0?<p className="text-sm text-gray-400 text-center py-4">Tudo em dia ✅</p>:(
             <div className="space-y-1.5" style={{maxHeight:200,overflowY:"auto"}}>
-              {pendInc.map(t=>{const cat=getCat(t.category_id);return(
+              {pendingIncome.map(t=>{const cat=getCat(t.category_id);return(
                 <div key={t.id} className="flex items-center justify-between p-2 rounded-xl hover:bg-gray-50 group">
                   <div className="flex items-center gap-2">
                     <span className="text-lg">{cat?.emoji||"📦"}</span>
@@ -404,20 +449,17 @@ function Dashboard({mTxns,allCats,cards,txns,month,onToggle}){
 }
 
 // ── TRANSACTIONS ───────────────────────────────────────────────────────────────
-function Transactions({mTxns,allCats,cards,txns,onEdit,onDelete,onToggle,month}){
+function Transactions({summary,allCats,cards,txns,month,onEdit,onDelete,onToggle}){
   const [filt,setFilt]=useState("all")
-  const [invoiceModal,setInvoiceModal]=useState(null) // fatura selecionada
+  const [invoiceModal,setInvoiceModal]=useState(null)
+  const {mTxns,invoices}=summary
 
-  const allInvoices=useMemo(()=>getAllCardInvoices(txns,cards),[txns,cards])
-  const monthInvoices=useMemo(()=>allInvoices.filter(inv=>inv.invMonth===month),[allInvoices,month])
-
-  // Lançamentos avulsos (sem cartão)
-  const avulsos=mTxns.filter(t=>!t.card_id&&!t.projected)
-  const avulsosProj=mTxns.filter(t=>!t.card_id&&t.projected)
-
-  const filteredAvulsos=[...avulsos,...avulsosProj].filter(t=>
-    filt==="all"||t.type===filt||(filt==="recurrent"&&t.recurrent)
-  ).sort((a,b)=>b.date.localeCompare(a.date))
+  const avulsos=useMemo(()=>{
+    return mTxns
+      .filter(t=>!t.card_id)
+      .filter(t=>filt==="all"||t.type===filt||(filt==="recurrent"&&t.recurrent))
+      .sort((a,b)=>b.date.localeCompare(a.date))
+  },[mTxns,filt])
 
   const showInvoices=filt==="all"||filt==="expense"
 
@@ -427,58 +469,50 @@ function Transactions({mTxns,allCats,cards,txns,onEdit,onDelete,onToggle,month})
         <p className="text-base font-bold text-gray-900 whitespace-nowrap">Lançamentos</p>
         <Tabs opts={[["all","Todos"],["expense","Despesas"],["income","Receitas"],["recurrent","Recorrentes"]]} val={filt} onChange={setFilt}/>
       </div>
-
       <div className="space-y-3">
-        {/* Faturas de cartão do mês */}
-        {showInvoices&&monthInvoices.length>0&&(
+        {showInvoices&&invoices.length>0&&(
           <div className="bg-white rounded-2xl shadow-sm overflow-hidden">
             <div className="px-5 py-3 border-b border-gray-50">
               <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide">Faturas de Cartão</p>
             </div>
-            {monthInvoices.map((inv,i)=>{
-              const ok=inv.allPaid
-              return(
-                <div key={inv.key} onClick={()=>setInvoiceModal(inv)}
-                  className={`flex items-center px-5 py-3.5 hover:bg-gray-50 cursor-pointer ${i<monthInvoices.length-1?"border-b border-gray-50":""}`}>
-                  <div className="w-9 h-9 rounded-xl flex items-center justify-center text-base mr-3 flex-shrink-0"
-                    style={{background:inv.card.color+"20"}}>💳</div>
-                  <div className="flex-1 min-w-0">
-                    <p className="text-sm font-semibold text-gray-800">Fatura {inv.card.name}</p>
-                    <p className="text-xs text-gray-400">Vence {Dt(inv.dueDate)} • {inv.txs.length} compra{inv.txs.length>1?"s":""} • <span className="text-blue-400">ver detalhes →</span></p>
-                  </div>
-                  <div className="text-right">
-                    <p className="text-sm font-bold text-red-500">-{R(inv.total)}</p>
-                    <span className="text-xs px-1.5 py-0.5 rounded-full"
-                      style={{background:ok?"rgba(16,185,129,0.1)":"rgba(245,158,11,0.1)",color:ok?"#10B981":"#F59E0B"}}>
-                      {ok?"✅ Paga":"⏳ Pendente"}
-                    </span>
-                  </div>
+            {invoices.map((inv,i)=>{const ok=inv.allPaid;return(
+              <div key={inv.key} onClick={()=>setInvoiceModal(inv)}
+                className={`flex items-center px-5 py-3.5 hover:bg-gray-50 cursor-pointer ${i<invoices.length-1?"border-b border-gray-50":""}`}>
+                <div className="w-9 h-9 rounded-xl flex items-center justify-center text-base mr-3 flex-shrink-0" style={{background:inv.card.color+"20"}}>💳</div>
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-semibold text-gray-800">Fatura {inv.card.name}</p>
+                  <p className="text-xs text-gray-400">Vence {Dt(inv.dueDate)} • {inv.txs.length} compra{inv.txs.length>1?"s":""} • <span className="text-blue-400">ver detalhes →</span></p>
                 </div>
-              )
-            })}
+                <div className="text-right">
+                  <p className="text-sm font-bold text-red-500">-{R(inv.total)}</p>
+                  <span className="text-xs px-1.5 py-0.5 rounded-full"
+                    style={{background:ok?"rgba(16,185,129,0.1)":"rgba(245,158,11,0.1)",color:ok?"#10B981":"#F59E0B"}}>
+                    {ok?"✅ Paga":"⏳ Pendente"}
+                  </span>
+                </div>
+              </div>
+            )})}
           </div>
         )}
 
-        {/* Lançamentos avulsos */}
         <div className="bg-white rounded-2xl shadow-sm overflow-hidden">
-          {showInvoices&&monthInvoices.length>0&&(
+          {showInvoices&&invoices.length>0&&(
             <div className="px-5 py-3 border-b border-gray-50">
               <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide">Outros Lançamentos</p>
             </div>
           )}
-          {filteredAvulsos.length===0?<p className="text-sm text-gray-400 text-center py-14">Nenhum lançamento</p>:(
-            filteredAvulsos.map((t,i)=>{
+          {avulsos.length===0?<p className="text-sm text-gray-400 text-center py-14">Nenhum lançamento</p>:(
+            avulsos.map((t,i)=>{
               const cat=allCats.find(c=>c.id===t.category_id)
               const ok=t.status==="paid"||t.status==="received"
               return(
-                <div key={t.id} className={`flex items-center px-5 py-3.5 hover:bg-gray-50 group ${t.projected?"bg-blue-50/40":""} ${i<filteredAvulsos.length-1?"border-b border-gray-50":""}`}>
-                  <div className="w-9 h-9 rounded-xl flex items-center justify-center text-base mr-3 flex-shrink-0"
-                    style={{background:(cat?.color||"#94A3B8")+"15"}}>{cat?.emoji||"📦"}</div>
+                <div key={t.id} className={`flex items-center px-5 py-3.5 hover:bg-gray-50 group ${t.projected?"bg-blue-50/40":""} ${i<avulsos.length-1?"border-b border-gray-50":""}`}>
+                  <div className="w-9 h-9 rounded-xl flex items-center justify-center text-base mr-3 flex-shrink-0" style={{background:(cat?.color||"#94A3B8")+"15"}}>{cat?.emoji||"📦"}</div>
                   <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-1.5">
+                    <div className="flex items-center gap-1.5 flex-wrap">
                       <p className="text-sm font-semibold text-gray-800 truncate">{t.description}</p>
-                      {t.recurrent&&<span className="text-xs px-1.5 py-0.5 rounded-full flex-shrink-0" style={{background:"#ECFDF5",color:"#10B981"}}>🔁 {RECURRENCE_OPTS.find(r=>r.value===t.recurrence_type)?.label}</span>}
-                      {t.projected&&<span className="text-xs px-1.5 py-0.5 rounded-full flex-shrink-0" style={{background:"#EFF6FF",color:"#3B82F6"}}>Projeção</span>}
+                      {t.recurrent&&<span className="text-xs px-1.5 py-0.5 rounded-full" style={{background:"#ECFDF5",color:"#10B981"}}>🔁 {RECURRENCE_OPTS.find(r=>r.value===t.recurrence_type)?.label}</span>}
+                      {t.projected&&<span className="text-xs px-1.5 py-0.5 rounded-full" style={{background:"#EFF6FF",color:"#3B82F6"}}>Projeção</span>}
                     </div>
                     <p className="text-xs text-gray-400">{cat?.name||"—"} • {Dt(t.date)}</p>
                   </div>
@@ -486,8 +520,7 @@ function Transactions({mTxns,allCats,cards,txns,onEdit,onDelete,onToggle,month})
                     <div className="text-right">
                       <p className="text-sm font-bold" style={{color:t.type==="income"?"#10B981":"#EF4444"}}>{t.type==="income"?"+":"-"}{R(t.amount)}</p>
                       {!t.projected?(
-                        <button onClick={()=>onToggle(t)}
-                          className="text-xs px-1.5 py-0.5 rounded-full cursor-pointer hover:opacity-75 transition-opacity"
+                        <button onClick={()=>onToggle(t)} className="text-xs px-1.5 py-0.5 rounded-full cursor-pointer hover:opacity-75"
                           style={{background:ok?"rgba(16,185,129,0.1)":"rgba(245,158,11,0.1)",color:ok?"#10B981":"#F59E0B"}}>
                           {ok?"✅ ":""}{t.status==="paid"?"Pago":t.status==="received"?"Recebido":"⏳ Pendente"}
                         </button>
@@ -509,18 +542,11 @@ function Transactions({mTxns,allCats,cards,txns,onEdit,onDelete,onToggle,month})
         </div>
       </div>
 
-      {/* Modal detalhe fatura */}
       {invoiceModal&&(
         <Modal title={`Fatura ${invoiceModal.card.name}`} onClose={()=>setInvoiceModal(null)} wide>
           <div className="flex items-center justify-between px-1 mb-2">
-            <div>
-              <p className="text-xs text-gray-400">Vencimento</p>
-              <p className="text-sm font-bold text-gray-800">{Dt(invoiceModal.dueDate)}</p>
-            </div>
-            <div className="text-right">
-              <p className="text-xs text-gray-400">Total da fatura</p>
-              <p className="text-xl font-bold text-red-500">{R(invoiceModal.total)}</p>
-            </div>
+            <div><p className="text-xs text-gray-400">Vencimento</p><p className="text-sm font-bold text-gray-800">{Dt(invoiceModal.dueDate)}</p></div>
+            <div className="text-right"><p className="text-xs text-gray-400">Total</p><p className="text-xl font-bold text-red-500">{R(invoiceModal.total)}</p></div>
           </div>
           <div className="rounded-2xl overflow-hidden border border-gray-100">
             {invoiceModal.txs.map((t,i)=>{
@@ -528,12 +554,8 @@ function Transactions({mTxns,allCats,cards,txns,onEdit,onDelete,onToggle,month})
               const ok=t.status==="paid"
               return(
                 <div key={t.id} className={`flex items-center px-4 py-3 hover:bg-gray-50 ${i<invoiceModal.txs.length-1?"border-b border-gray-50":""}`}>
-                  <div className="w-8 h-8 rounded-xl flex items-center justify-center text-sm mr-3 flex-shrink-0"
-                    style={{background:(cat?.color||"#94A3B8")+"15"}}>{cat?.emoji||"📦"}</div>
-                  <div className="flex-1 min-w-0">
-                    <p className="text-sm font-semibold text-gray-800 truncate">{t.description}</p>
-                    <p className="text-xs text-gray-400">{cat?.name} • {Dt(t.date)}</p>
-                  </div>
+                  <div className="w-8 h-8 rounded-xl flex items-center justify-center text-sm mr-3 flex-shrink-0" style={{background:(cat?.color||"#94A3B8")+"15"}}>{cat?.emoji||"📦"}</div>
+                  <div className="flex-1"><p className="text-sm font-semibold text-gray-800">{t.description}</p><p className="text-xs text-gray-400">{cat?.name} • {Dt(t.date)}</p></div>
                   <div className="text-right">
                     <p className="text-sm font-bold text-red-500">{R(t.amount)}</p>
                     <span className="text-xs" style={{color:ok?"#10B981":"#F59E0B"}}>{ok?"✅ Pago":"⏳ Pendente"}</span>
@@ -545,11 +567,7 @@ function Transactions({mTxns,allCats,cards,txns,onEdit,onDelete,onToggle,month})
           <div className="flex gap-3 pt-1">
             <GhostBtn full onClick={()=>setInvoiceModal(null)}>Fechar</GhostBtn>
             {!invoiceModal.allPaid&&(
-              <GreenBtn full onClick={()=>{
-                // marcar todas as compras da fatura como pagas
-                invoiceModal.txs.forEach(t=>onToggle(t))
-                setInvoiceModal(null)
-              }}>✅ Marcar fatura como paga</GreenBtn>
+              <GreenBtn full onClick={()=>{invoiceModal.txs.forEach(t=>onToggle(t));setInvoiceModal(null)}}>✅ Marcar fatura como paga</GreenBtn>
             )}
           </div>
         </Modal>
@@ -558,7 +576,7 @@ function Transactions({mTxns,allCats,cards,txns,onEdit,onDelete,onToggle,month})
   )
 }
 
-// ── CARDS ──────────────────────────────────────────────────────────────────────
+// ── CARDS SCREEN ───────────────────────────────────────────────────────────────
 function CardsScreen({cards,txns,allCats,month,onAdd,onEdit,onDelete}){
   const [active,setActive]=useState(cards[0]?.id||null)
   const allInvoices=useMemo(()=>getAllCardInvoices(txns,cards),[txns,cards])
@@ -579,7 +597,7 @@ function CardsScreen({cards,txns,allCats,month,onAdd,onEdit,onDelete}){
         <div className="bg-white rounded-2xl p-14 text-center shadow-sm"><p className="text-4xl mb-2">💳</p><p className="text-sm text-gray-400">Nenhum cartão</p></div>
       ):(
         <>
-          <div className="grid grid-cols-3 gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             {cardUsage.map(c=>{const sel=active===c.id;return(
               <div key={c.id} onClick={()=>setActive(c.id)} className="cursor-pointer rounded-2xl p-5 shadow-sm hover:shadow-md transition-all"
                 style={{background:sel?c.color:"white",border:sel?`2px solid ${c.color}`:"1px solid #F1F5F9"}}>
@@ -606,7 +624,7 @@ function CardsScreen({cards,txns,allCats,month,onAdd,onEdit,onDelete}){
                 <p className="font-semibold text-gray-800 text-sm">Fatura — {cards.find(c=>c.id===active)?.name} ({monthLabel(month)})</p>
                 <span className="text-sm font-bold text-red-500">{R(stTotal)}</span>
               </div>
-              {stmnt.length===0?<p className="text-sm text-gray-400 text-center py-10">Sem gastos neste mês</p>:
+              {stmnt.length===0?<p className="text-sm text-gray-400 text-center py-10">Sem gastos nesta fatura</p>:
                 stmnt.map((t,i)=>{const cat=allCats.find(c=>c.id===t.category_id);return(
                   <div key={t.id} className={`flex items-center px-5 py-3 hover:bg-gray-50 ${i<stmnt.length-1?"border-b border-gray-50":""}`}>
                     <span className="text-base mr-3">{cat?.emoji||"📦"}</span>
@@ -637,7 +655,7 @@ function CatsScreen({cats,onAdd,onEdit,onDelete}){
       {cats[tab].length===0?(
         <div className="bg-white rounded-2xl p-14 text-center shadow-sm"><p className="text-4xl mb-2">🏷️</p><p className="text-sm text-gray-400">Nenhuma categoria</p></div>
       ):(
-        <div className="grid grid-cols-3 gap-4">
+        <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
           {cats[tab].map(c=>(
             <div key={c.id} className="bg-white rounded-2xl p-4 shadow-sm flex items-center justify-between hover:shadow-md group">
               <div className="flex items-center gap-3">
@@ -657,22 +675,27 @@ function CatsScreen({cats,onAdd,onEdit,onDelete}){
 }
 
 // ── REPORTS ────────────────────────────────────────────────────────────────────
-function Reports({txns,cats,month}){
+function Reports({txns,cards,cats,month}){
   const allCats=useMemo(()=>[...cats.expense,...cats.income],[cats])
   const chartData=useMemo(()=>Array.from({length:6},(_,i)=>{
-    const m=shiftMonth(month,i-5);const[,mo]=m.split("-").map(Number)
-    const mt=getMonthTxns(txns,m)
-    const inc=mt.filter(t=>t.type==="income"&&t.status==="received").reduce((s,t)=>s+t.amount,0)
-    const exp=mt.filter(t=>t.type==="expense"&&t.status==="paid").reduce((s,t)=>s+t.amount,0)
-    return{label:MONTHS[mo-1].slice(0,3),inc,exp,bal:inc-exp}
-  }),[txns,month])
-  const mTxns=useMemo(()=>getMonthTxns(txns,month),[txns,month])
+    const m=shiftMonth(month,i-5)
+    const s=computeMonthSummary(txns,cards,m)
+    const [,mo]=m.split("-").map(Number)
+    return{label:MONTHS[mo-1].slice(0,3),inc:s.incomeReceived,exp:s.expensePaid,bal:s.balance}
+  }),[txns,cards,month])
+
+  const curSummary=useMemo(()=>computeMonthSummary(txns,cards,month),[txns,cards,month])
   const catData=useMemo(()=>{
     const g={}
-    mTxns.filter(t=>t.type==="expense"&&t.status==="paid").forEach(t=>{g[t.category_id]=(g[t.category_id]||0)+t.amount})
-    return Object.entries(g).map(([id,v])=>{const c=allCats.find(x=>x.id===id);return{name:c?.name||"Outros",value:v,color:c?.color||"#94A3B8"}}).sort((a,b)=>b.value-a.value)
-  },[mTxns,allCats])
+    curSummary.mTxns.filter(t=>t.type==="expense"&&t.status==="paid"&&!t.card_id).forEach(t=>{g[t.category_id]=(g[t.category_id]||0)+t.amount})
+    curSummary.invoices.filter(inv=>inv.allPaid).forEach(inv=>{g[`card_${inv.card.id}`]=(g[`card_${inv.card.id}`]||0)+inv.total})
+    return Object.entries(g).map(([id,v])=>{
+      if(id.startsWith("card_")){const c=cards.find(x=>`card_${x.id}`===id);return{name:`Fatura ${c?.name||"Cartão"}`,value:v,color:c?.color||"#8B5CF6"}}
+      const c=allCats.find(x=>x.id===id);return{name:c?.name||"Outros",value:v,color:c?.color||"#94A3B8"}
+    }).sort((a,b)=>b.value-a.value)
+  },[curSummary,allCats,cards])
   const total=catData.reduce((s,c)=>s+c.value,0)
+
   return(
     <div className="space-y-5">
       <p className="text-base font-bold text-gray-900">Relatórios</p>
@@ -688,17 +711,14 @@ function Reports({txns,cats,month}){
           </BarChart>
         </ResponsiveContainer>
       </div>
-      <div className="grid grid-cols-2 gap-5">
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
         <div className="bg-white rounded-2xl p-5 shadow-sm">
           <p className="text-sm font-semibold text-gray-800 mb-4">Despesas por Categoria</p>
           {catData.length===0?<p className="text-sm text-gray-400 text-center py-6">Sem dados</p>:(
             <div className="space-y-3">
               {catData.map((c,i)=>(
                 <div key={i}>
-                  <div className="flex justify-between text-xs mb-1">
-                    <span className="font-medium text-gray-700">{c.name}</span>
-                    <span className="text-gray-400">{R(c.value)} ({total?Math.round(c.value/total*100):0}%)</span>
-                  </div>
+                  <div className="flex justify-between text-xs mb-1"><span className="font-medium text-gray-700">{c.name}</span><span className="text-gray-400">{R(c.value)} ({total?Math.round(c.value/total*100):0}%)</span></div>
                   <div className="w-full h-1.5 rounded-full bg-gray-100"><div className="h-full rounded-full" style={{width:`${total?c.value/total*100:0}%`,background:c.color}}/></div>
                 </div>
               ))}
@@ -764,7 +784,11 @@ export default function App(){
   const [aiLoad,setAiLoad]=useState(false)
 
   const allCats=useMemo(()=>[...cats.expense,...cats.income],[cats])
-  const mTxns=useMemo(()=>getMonthTxns(txns,month),[txns,month])
+
+  // Summaries calculados uma única vez, compartilhados entre todas as telas
+  const summary=useMemo(()=>computeMonthSummary(txns,cards,month),[txns,cards,month])
+  const nextMonth=useMemo(()=>shiftMonth(month,1),[month])
+  const nextSummary=useMemo(()=>computeMonthSummary(txns,cards,nextMonth),[txns,cards,nextMonth])
 
   useEffect(()=>{
     supabase.auth.getSession().then(({data:{session}})=>{
@@ -774,7 +798,7 @@ export default function App(){
     const {data:{subscription}}=supabase.auth.onAuthStateChange((_,session)=>{
       setSession(session)
       if(session) loadData(session.user.id)
-      else { setTxns([]); setCards([]); setCats({expense:[],income:[]}) }
+      else{ setTxns([]); setCards([]); setCats({expense:[],income:[]}) }
     })
     return ()=>subscription.unsubscribe()
   },[])
@@ -808,35 +832,32 @@ export default function App(){
 
   // ── Transactions
   const openAddTx=()=>{setTxF(blankTx);setEditTxId(null);setTxMod(true)}
-  const openEditTx=t=>{setTxF({...t,amount:String(t.amount),card_id:t.card_id||""});setEditTxId(t.id);setTxMod(true)}
+  const openEditTx=t=>{setTxF({...t,amount:String(t.amount),card_id:t.card_id||"",installments:"1"});setEditTxId(t.id);setTxMod(true)}
 
   const saveTx=async()=>{
     if(!txF.description||!txF.amount||!txF.category_id) return
     const totalAmount=parseFloat(txF.amount)
     const installments=txF.card_id&&!txF.recurrent?Math.max(1,parseInt(txF.installments)||1):1
     const installmentAmount=parseFloat((totalAmount/installments).toFixed(2))
-    const installmentId=crypto.randomUUID() // agrupa parcelas
+    const installmentGroupId=crypto.randomUUID()
 
     const rows=Array.from({length:installments},(_,i)=>{
-      const d=new Date(txF.date+"T12:00:00")
-      d.setMonth(d.getMonth()+i)
-      const dateStr=d.toISOString().split("T")[0]
-      return {
-        user_id:userId, type:txF.type, description: installments>1
-          ? `${txF.description} (${i+1}/${installments})`
-          : txF.description,
+      const d=new Date(txF.date+"T12:00:00"); d.setMonth(d.getMonth()+i)
+      return{
+        user_id:userId, type:txF.type,
+        description:installments>1?`${txF.description} (${i+1}/${installments})`:txF.description,
         amount:installmentAmount, category_id:txF.category_id,
-        date:dateStr, status:txF.status, card_id:txF.card_id||null,
+        date:d.toISOString().split("T")[0], status:txF.status,
+        card_id:txF.card_id||null,
         recurrent:txF.recurrent, recurrence_type:txF.recurrent?txF.recurrence_type:null,
-        installment_group:installments>1?installmentId:null,
+        installment_group:installments>1?installmentGroupId:null,
         installment_index:installments>1?i+1:null,
         installment_total:installments>1?installments:null,
       }
     })
 
     if(editTxId){
-      const payload=rows[0]
-      const {data}=await supabase.from("transactions").update(payload).eq("id",editTxId).select().single()
+      const {data}=await supabase.from("transactions").update(rows[0]).eq("id",editTxId).select().single()
       if(data) setTxns(p=>p.map(t=>t.id===editTxId?data:t))
     } else {
       const {data}=await supabase.from("transactions").insert(rows).select()
@@ -901,8 +922,6 @@ export default function App(){
   // ── AI
   const triggerAI=async tx=>{
     setAiLoad(true); setAiTip("loading")
-    const inc=txns.filter(t=>t.date?.startsWith(month)&&t.type==="income"&&t.status==="received").reduce((s,t)=>s+t.amount,0)
-    const exp=txns.filter(t=>t.date?.startsWith(month)&&t.type==="expense"&&t.status==="paid").reduce((s,t)=>s+t.amount,0)
     const cat=allCats.find(c=>c.id===tx.category_id)
     try{
       const res=await fetch("https://api.anthropic.com/v1/messages",{
@@ -910,7 +929,7 @@ export default function App(){
         headers:{"Content-Type":"application/json","x-api-key":import.meta.env.VITE_ANTHROPIC_KEY,"anthropic-version":"2023-06-01"},
         body:JSON.stringify({model:"claude-sonnet-4-20250514",max_tokens:200,
           system:"Consultor financeiro simpático. Responda em PT-BR, 2-3 frases curtas, sem markdown.",
-          messages:[{role:"user",content:`Lançamento: ${R(tx.amount)} em "${cat?.name}". Receita mês: ${R(inc)}. Despesas: ${R(exp)}. ${tx.recurrent?"É recorrente.":""} Dê uma dica financeira.`}]})
+          messages:[{role:"user",content:`Lançamento: ${R(tx.amount)} em "${cat?.name}". Receita mês: ${R(summary.incomeReceived)}. Despesas: ${R(summary.expensePaid)}. ${tx.recurrent?"É recorrente.":""} Dê uma dica financeira.`}]})
       })
       const data=await res.json()
       setAiTip(data.content?.[0]?.text||"Continue acompanhando suas finanças!")
@@ -919,16 +938,16 @@ export default function App(){
   }
 
   const nav=[
-    {id:"dashboard",label:"Visão Geral",icon:"🏠"},
-    {id:"transactions",label:"Lançamentos",icon:"📋"},
-    {id:"cards",label:"Cartões",icon:"💳"},
-    {id:"categories",label:"Categorias",icon:"🏷️"},
-    {id:"reports",label:"Relatórios",icon:"📊"},
+    {id:"dashboard",   label:"Visão Geral", icon:"🏠"},
+    {id:"transactions",label:"Lançamentos", icon:"📋"},
+    {id:"cards",       label:"Cartões",     icon:"💳"},
+    {id:"categories",  label:"Categorias",  icon:"🏷️"},
+    {id:"reports",     label:"Relatórios",  icon:"📊"},
   ]
 
   return(
     <div className="min-h-screen flex" style={{background:"#F8FAFC"}}>
-      {/* Sidebar — só desktop */}
+      {/* Sidebar desktop */}
       <div className="hidden md:flex w-56 flex-shrink-0 flex-col" style={{background:"#0F172A"}}>
         <div className="p-5 border-b border-white/10">
           <div className="flex items-center gap-2.5">
@@ -956,7 +975,6 @@ export default function App(){
 
       {/* Main */}
       <div className="flex-1 flex flex-col min-w-0">
-        {/* Header */}
         <div className="bg-white border-b border-gray-100 px-4 md:px-6 py-3 md:py-4 flex items-center justify-between gap-3">
           <div className="min-w-0">
             <p className="text-sm md:text-base font-bold text-gray-900 truncate">{nav.find(n=>n.id===scr)?.icon} {nav.find(n=>n.id===scr)?.label}</p>
@@ -977,11 +995,11 @@ export default function App(){
             <div className="flex items-center justify-center h-64"><p className="text-gray-400 animate-pulse">Carregando dados...</p></div>
           ):(
             <>
-              {scr==="dashboard"&&<Dashboard mTxns={mTxns} allCats={allCats} cards={cards} txns={txns} month={month} onToggle={toggleTx}/>}
-              {scr==="transactions"&&<Transactions mTxns={mTxns} allCats={allCats} cards={cards} txns={txns} month={month} onEdit={openEditTx} onDelete={deleteTx} onToggle={toggleTx}/>}
+              {scr==="dashboard"&&<Dashboard summary={summary} nextSummary={nextSummary} nextMonth={nextMonth} allCats={allCats} cards={cards} onToggle={toggleTx}/>}
+              {scr==="transactions"&&<Transactions summary={summary} allCats={allCats} cards={cards} txns={txns} month={month} onEdit={openEditTx} onDelete={deleteTx} onToggle={toggleTx}/>}
               {scr==="cards"&&<CardsScreen cards={cards} txns={txns} allCats={allCats} month={month} onAdd={openAddCard} onEdit={openEditCard} onDelete={deleteCard}/>}
               {scr==="categories"&&<CatsScreen cats={cats} onAdd={openAddCat} onEdit={openEditCat} onDelete={deleteCat}/>}
-              {scr==="reports"&&<Reports txns={txns} cats={cats} month={month}/>}
+              {scr==="reports"&&<Reports txns={txns} cards={cards} cats={cats} month={month}/>}
             </>
           )}
         </div>
@@ -1011,7 +1029,6 @@ export default function App(){
               </Sel>
             )}
           </div>
-          {/* Parcelas — aparece só quando cartão selecionado */}
           {txF.type==="expense"&&txF.card_id&&!txF.recurrent&&(
             <div className="rounded-xl border border-blue-100 p-4 space-y-2" style={{background:"#EFF6FF"}}>
               <p className="text-sm font-semibold text-blue-800">💳 Parcelamento</p>
@@ -1019,17 +1036,16 @@ export default function App(){
                 <Sel label="Número de parcelas" value={txF.installments} onChange={e=>setTxF({...txF,installments:e.target.value})}>
                   {Array.from({length:24},(_,i)=>i+1).map(n=><option key={n} value={n}>{n}x {n>1?`de ${R(parseFloat(txF.amount||0)/n)}`:"(à vista)"}</option>)}
                 </Sel>
-                <div className="pb-0.5">
+                <div>
                   <p className="text-xs text-blue-600 font-medium">Valor por parcela</p>
                   <p className="text-lg font-bold text-blue-800">{R(parseFloat(txF.amount||0)/Math.max(1,parseInt(txF.installments)||1))}</p>
                 </div>
               </div>
               {parseInt(txF.installments)>1&&(
-                <p className="text-xs text-blue-500">📅 Serão criadas {txF.installments} parcelas a partir de {new Date(txF.date+"T12:00:00").toLocaleDateString("pt-BR",{month:"long",year:"numeric"})}</p>
+                <p className="text-xs text-blue-500">📅 {txF.installments} parcelas a partir de {new Date(txF.date+"T12:00:00").toLocaleDateString("pt-BR",{month:"long",year:"numeric"})}</p>
               )}
             </div>
           )}
-          {/* Recorrência */}
           <div className="rounded-xl border border-gray-200 p-4 space-y-3" style={{background:txF.recurrent?"#ECFDF5":"#F9FAFB"}}>
             <label className="flex items-center gap-3 cursor-pointer">
               <div onClick={()=>setTxF({...txF,recurrent:!txF.recurrent})}
@@ -1104,12 +1120,10 @@ export default function App(){
         </Modal>
       )}
 
-      {aiTip&&<AiTip tip={aiTip} loading={aiLoad} onClose={()=>setAiTip(null)}/>}
-
-      {/* Bottom nav — só mobile */}
+      {/* Bottom nav mobile */}
       <div className="md:hidden fixed bottom-0 left-0 right-0 bg-white border-t border-gray-100 flex z-40" style={{paddingBottom:"env(safe-area-inset-bottom)"}}>
         {nav.map(n=>(
-          <button key={n.id} onClick={()=>setScr(n.id)} className="flex-1 flex flex-col items-center py-2.5 gap-0.5 cursor-pointer transition-colors"
+          <button key={n.id} onClick={()=>setScr(n.id)} className="flex-1 flex flex-col items-center py-2.5 gap-0.5 cursor-pointer"
             style={{color:scr===n.id?"#10B981":"#9CA3AF"}}>
             <span className="text-xl leading-none">{n.icon}</span>
             <span className="text-xs font-medium">{n.label.split(" ")[0]}</span>
@@ -1120,8 +1134,8 @@ export default function App(){
           <span className="text-xs font-medium">Sair</span>
         </button>
       </div>
+
+      {aiTip&&<AiTip tip={aiTip} loading={aiLoad} onClose={()=>setAiTip(null)}/>}
     </div>
   )
 }
-
-
