@@ -328,7 +328,7 @@ function Dashboard({mTxns,allCats,cards,txns,month,onToggle}){
             <div className="space-y-1.5" style={{maxHeight:200,overflowY:"auto"}}>
               {/* Faturas de cartão pendentes */}
               {pendingInvoices.map(inv=>(
-                <div key={inv.card.id} className="flex items-center justify-between p-2 rounded-xl hover:bg-gray-50">
+                <div key={inv.card.id} className="flex items-center justify-between p-2 rounded-xl hover:bg-gray-50 group">
                   <div className="flex items-center gap-2">
                     <div className="w-8 h-8 rounded-xl flex items-center justify-center text-sm font-bold flex-shrink-0" style={{background:inv.card.color+"20",color:inv.card.color}}>💳</div>
                     <div>
@@ -336,7 +336,11 @@ function Dashboard({mTxns,allCats,cards,txns,month,onToggle}){
                       <p className="text-xs text-gray-400">Vence {Dt(inv.dueDate)} • {inv.txs.length} compra{inv.txs.length>1?"s":""}</p>
                     </div>
                   </div>
-                  <span className="text-sm font-bold text-red-500">{R(inv.total)}</span>
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm font-bold text-red-500">{R(inv.total)}</span>
+                    <button onClick={()=>inv.txs.forEach(t=>onToggle(t))}
+                      className="p-1 rounded-lg hover:bg-emerald-50 text-transparent group-hover:text-emerald-400 cursor-pointer transition-colors">✓</button>
+                  </div>
                 </div>
               ))}
               {/* Despesas avulsas pendentes */}
@@ -397,57 +401,156 @@ function Dashboard({mTxns,allCats,cards,txns,month,onToggle}){
 }
 
 // ── TRANSACTIONS ───────────────────────────────────────────────────────────────
-function Transactions({mTxns,allCats,cards,onEdit,onDelete,onToggle}){
+function Transactions({mTxns,allCats,cards,txns,onEdit,onDelete,onToggle,month}){
   const [filt,setFilt]=useState("all")
-  const rows=[...mTxns].filter(t=>filt==="all"||t.type===filt||(filt==="recurrent"&&t.recurrent)).sort((a,b)=>b.date.localeCompare(a.date))
+  const [invoiceModal,setInvoiceModal]=useState(null) // fatura selecionada
+
+  const allInvoices=useMemo(()=>getAllCardInvoices(txns,cards),[txns,cards])
+  const monthInvoices=useMemo(()=>allInvoices.filter(inv=>inv.invMonth===month),[allInvoices,month])
+
+  // Lançamentos avulsos (sem cartão)
+  const avulsos=mTxns.filter(t=>!t.card_id&&!t.projected)
+  const avulsosProj=mTxns.filter(t=>!t.card_id&&t.projected)
+
+  const filteredAvulsos=[...avulsos,...avulsosProj].filter(t=>
+    filt==="all"||t.type===filt||(filt==="recurrent"&&t.recurrent)
+  ).sort((a,b)=>b.date.localeCompare(a.date))
+
+  const showInvoices=filt==="all"||filt==="expense"
+
   return(
     <div>
       <div className="flex items-center gap-3 mb-5 flex-wrap">
         <p className="text-base font-bold text-gray-900 whitespace-nowrap">Lançamentos</p>
         <Tabs opts={[["all","Todos"],["expense","Despesas"],["income","Receitas"],["recurrent","Recorrentes"]]} val={filt} onChange={setFilt}/>
       </div>
-      <div className="bg-white rounded-2xl shadow-sm overflow-hidden">
-        {rows.length===0?<p className="text-sm text-gray-400 text-center py-14">Nenhum lançamento</p>:(
-          rows.map((t,i)=>{
-            const cat=allCats.find(c=>c.id===t.category_id)
-            const card=cards.find(c=>c.id===t.card_id)
-            const ok=t.status==="paid"||t.status==="received"
-            return(
-              <div key={t.id} className={`flex items-center px-5 py-3.5 hover:bg-gray-50 group ${t.projected?"bg-blue-50/40":""} ${i<rows.length-1?"border-b border-gray-50":""}`}>
-                <div className="w-9 h-9 rounded-xl flex items-center justify-center text-base mr-3 flex-shrink-0" style={{background:(cat?.color||"#94A3B8")+"15"}}>{cat?.emoji||"📦"}</div>
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-1.5">
-                    <p className="text-sm font-semibold text-gray-800 truncate">{t.description}</p>
-                    {t.recurrent&&<span className="text-xs px-1.5 py-0.5 rounded-full flex-shrink-0" style={{background:"#ECFDF5",color:"#10B981"}}>🔁 {RECURRENCE_OPTS.find(r=>r.value===t.recurrence_type)?.label}</span>}
-                    {t.projected&&<span className="text-xs px-1.5 py-0.5 rounded-full flex-shrink-0" style={{background:"#EFF6FF",color:"#3B82F6"}}>Projeção</span>}
+
+      <div className="space-y-3">
+        {/* Faturas de cartão do mês */}
+        {showInvoices&&monthInvoices.length>0&&(
+          <div className="bg-white rounded-2xl shadow-sm overflow-hidden">
+            <div className="px-5 py-3 border-b border-gray-50">
+              <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide">Faturas de Cartão</p>
+            </div>
+            {monthInvoices.map((inv,i)=>{
+              const ok=inv.allPaid
+              return(
+                <div key={inv.key} onClick={()=>setInvoiceModal(inv)}
+                  className={`flex items-center px-5 py-3.5 hover:bg-gray-50 cursor-pointer ${i<monthInvoices.length-1?"border-b border-gray-50":""}`}>
+                  <div className="w-9 h-9 rounded-xl flex items-center justify-center text-base mr-3 flex-shrink-0"
+                    style={{background:inv.card.color+"20"}}>💳</div>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-semibold text-gray-800">Fatura {inv.card.name}</p>
+                    <p className="text-xs text-gray-400">Vence {Dt(inv.dueDate)} • {inv.txs.length} compra{inv.txs.length>1?"s":""} • <span className="text-blue-400">ver detalhes →</span></p>
                   </div>
-                  <p className="text-xs text-gray-400">{cat?.name||"—"} • {Dt(t.date)}{card?` • 💳 ${card.name}`:""}</p>
-                </div>
-                <div className="flex items-center gap-3">
                   <div className="text-right">
-                    <p className="text-sm font-bold" style={{color:t.type==="income"?"#10B981":"#EF4444"}}>{t.type==="income"?"+":"-"}{R(t.amount)}</p>
-                    {!t.projected?(
-                      <button title="Clique para alternar status" onClick={()=>onToggle(t)}
-                        className="text-xs px-1.5 py-0.5 rounded-full cursor-pointer hover:opacity-75 transition-opacity"
-                        style={{background:ok?"rgba(16,185,129,0.1)":"rgba(245,158,11,0.1)",color:ok?"#10B981":"#F59E0B"}}>
-                        {ok?"✅ ":""}{t.status==="paid"?"Pago":t.status==="received"?"Recebido":"⏳ Pendente"}
-                      </button>
-                    ):(
-                      <span className="text-xs px-1.5 py-0.5 rounded-full" style={{background:"rgba(59,130,246,0.1)",color:"#3B82F6"}}>Projeção</span>
+                    <p className="text-sm font-bold text-red-500">-{R(inv.total)}</p>
+                    <span className="text-xs px-1.5 py-0.5 rounded-full"
+                      style={{background:ok?"rgba(16,185,129,0.1)":"rgba(245,158,11,0.1)",color:ok?"#10B981":"#F59E0B"}}>
+                      {ok?"✅ Paga":"⏳ Pendente"}
+                    </span>
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        )}
+
+        {/* Lançamentos avulsos */}
+        <div className="bg-white rounded-2xl shadow-sm overflow-hidden">
+          {showInvoices&&monthInvoices.length>0&&(
+            <div className="px-5 py-3 border-b border-gray-50">
+              <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide">Outros Lançamentos</p>
+            </div>
+          )}
+          {filteredAvulsos.length===0?<p className="text-sm text-gray-400 text-center py-14">Nenhum lançamento</p>:(
+            filteredAvulsos.map((t,i)=>{
+              const cat=allCats.find(c=>c.id===t.category_id)
+              const ok=t.status==="paid"||t.status==="received"
+              return(
+                <div key={t.id} className={`flex items-center px-5 py-3.5 hover:bg-gray-50 group ${t.projected?"bg-blue-50/40":""} ${i<filteredAvulsos.length-1?"border-b border-gray-50":""}`}>
+                  <div className="w-9 h-9 rounded-xl flex items-center justify-center text-base mr-3 flex-shrink-0"
+                    style={{background:(cat?.color||"#94A3B8")+"15"}}>{cat?.emoji||"📦"}</div>
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-1.5">
+                      <p className="text-sm font-semibold text-gray-800 truncate">{t.description}</p>
+                      {t.recurrent&&<span className="text-xs px-1.5 py-0.5 rounded-full flex-shrink-0" style={{background:"#ECFDF5",color:"#10B981"}}>🔁 {RECURRENCE_OPTS.find(r=>r.value===t.recurrence_type)?.label}</span>}
+                      {t.projected&&<span className="text-xs px-1.5 py-0.5 rounded-full flex-shrink-0" style={{background:"#EFF6FF",color:"#3B82F6"}}>Projeção</span>}
+                    </div>
+                    <p className="text-xs text-gray-400">{cat?.name||"—"} • {Dt(t.date)}</p>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <div className="text-right">
+                      <p className="text-sm font-bold" style={{color:t.type==="income"?"#10B981":"#EF4444"}}>{t.type==="income"?"+":"-"}{R(t.amount)}</p>
+                      {!t.projected?(
+                        <button onClick={()=>onToggle(t)}
+                          className="text-xs px-1.5 py-0.5 rounded-full cursor-pointer hover:opacity-75 transition-opacity"
+                          style={{background:ok?"rgba(16,185,129,0.1)":"rgba(245,158,11,0.1)",color:ok?"#10B981":"#F59E0B"}}>
+                          {ok?"✅ ":""}{t.status==="paid"?"Pago":t.status==="received"?"Recebido":"⏳ Pendente"}
+                        </button>
+                      ):(
+                        <span className="text-xs px-1.5 py-0.5 rounded-full" style={{background:"rgba(59,130,246,0.1)",color:"#3B82F6"}}>Projeção</span>
+                      )}
+                    </div>
+                    {!t.projected&&(
+                      <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                        <button onClick={()=>onEdit(t)} className="p-1.5 rounded-lg hover:bg-blue-50 text-gray-300 hover:text-blue-500 cursor-pointer">✏️</button>
+                        <button onClick={()=>onDelete(t.id)} className="p-1.5 rounded-lg hover:bg-red-50 text-gray-300 hover:text-red-500 cursor-pointer">🗑️</button>
+                      </div>
                     )}
                   </div>
-                  {!t.projected&&(
-                    <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                      <button onClick={()=>onEdit(t)} className="p-1.5 rounded-lg hover:bg-blue-50 text-gray-300 hover:text-blue-500 cursor-pointer">✏️</button>
-                      <button onClick={()=>onDelete(t.id)} className="p-1.5 rounded-lg hover:bg-red-50 text-gray-300 hover:text-red-500 cursor-pointer">🗑️</button>
-                    </div>
-                  )}
                 </div>
-              </div>
-            )
-          })
-        )}
+              )
+            })
+          )}
+        </div>
       </div>
+
+      {/* Modal detalhe fatura */}
+      {invoiceModal&&(
+        <Modal title={`Fatura ${invoiceModal.card.name}`} onClose={()=>setInvoiceModal(null)} wide>
+          <div className="flex items-center justify-between px-1 mb-2">
+            <div>
+              <p className="text-xs text-gray-400">Vencimento</p>
+              <p className="text-sm font-bold text-gray-800">{Dt(invoiceModal.dueDate)}</p>
+            </div>
+            <div className="text-right">
+              <p className="text-xs text-gray-400">Total da fatura</p>
+              <p className="text-xl font-bold text-red-500">{R(invoiceModal.total)}</p>
+            </div>
+          </div>
+          <div className="rounded-2xl overflow-hidden border border-gray-100">
+            {invoiceModal.txs.map((t,i)=>{
+              const cat=allCats.find(c=>c.id===t.category_id)
+              const ok=t.status==="paid"
+              return(
+                <div key={t.id} className={`flex items-center px-4 py-3 hover:bg-gray-50 ${i<invoiceModal.txs.length-1?"border-b border-gray-50":""}`}>
+                  <div className="w-8 h-8 rounded-xl flex items-center justify-center text-sm mr-3 flex-shrink-0"
+                    style={{background:(cat?.color||"#94A3B8")+"15"}}>{cat?.emoji||"📦"}</div>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-semibold text-gray-800 truncate">{t.description}</p>
+                    <p className="text-xs text-gray-400">{cat?.name} • {Dt(t.date)}</p>
+                  </div>
+                  <div className="text-right">
+                    <p className="text-sm font-bold text-red-500">{R(t.amount)}</p>
+                    <span className="text-xs" style={{color:ok?"#10B981":"#F59E0B"}}>{ok?"✅ Pago":"⏳ Pendente"}</span>
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+          <div className="flex gap-3 pt-1">
+            <GhostBtn full onClick={()=>setInvoiceModal(null)}>Fechar</GhostBtn>
+            {!invoiceModal.allPaid&&(
+              <GreenBtn full onClick={()=>{
+                // marcar todas as compras da fatura como pagas
+                invoiceModal.txs.forEach(t=>onToggle(t))
+                setInvoiceModal(null)
+              }}>✅ Marcar fatura como paga</GreenBtn>
+            )}
+          </div>
+        </Modal>
+      )}
     </div>
   )
 }
@@ -872,7 +975,7 @@ export default function App(){
           ):(
             <>
               {scr==="dashboard"&&<Dashboard mTxns={mTxns} allCats={allCats} cards={cards} txns={txns} month={month} onToggle={toggleTx}/>}
-              {scr==="transactions"&&<Transactions mTxns={mTxns} allCats={allCats} cards={cards} onEdit={openEditTx} onDelete={deleteTx} onToggle={toggleTx}/>}
+              {scr==="transactions"&&<Transactions mTxns={mTxns} allCats={allCats} cards={cards} txns={txns} month={month} onEdit={openEditTx} onDelete={deleteTx} onToggle={toggleTx}/>}
               {scr==="cards"&&<CardsScreen cards={cards} txns={txns} allCats={allCats} month={month} onAdd={openAddCard} onEdit={openEditCard} onDelete={deleteCard}/>}
               {scr==="categories"&&<CatsScreen cats={cats} onAdd={openAddCat} onEdit={openEditCat} onDelete={deleteCat}/>}
               {scr==="reports"&&<Reports txns={txns} cats={cats} month={month}/>}
