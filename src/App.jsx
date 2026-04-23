@@ -32,7 +32,12 @@ const DEF_CATS = [
 function getProjectedRecurrents(allTxns, month) {
   const projected = []
   allTxns
-    .filter(t => t.recurrent && t.date && t.date.slice(0,7) < month)
+    .filter(t => {
+      if (!t.recurrent || !t.date || t.date.slice(0,7) >= month) return false
+      // Respeita data de encerramento
+      if (t.recurrence_end && t.recurrence_end < month) return false
+      return true
+    })
     .forEach(t => {
       const alreadyExists = allTxns.some(x =>
         (x.origin_id === t.id || x.id === t.id) && x.date && x.date.startsWith(month)
@@ -449,7 +454,7 @@ function Dashboard({summary,nextSummary,nextMonth,allCats,cards,onToggle}){
 }
 
 // ── TRANSACTIONS ───────────────────────────────────────────────────────────────
-function Transactions({summary,allCats,cards,txns,month,onEdit,onDelete,onToggle}){
+function Transactions({summary,allCats,cards,txns,month,onEdit,onDelete,onToggle,onCancelRecurrence}){
   const [filt,setFilt]=useState("all")
   const [invoiceModal,setInvoiceModal]=useState(null)
   const {mTxns,invoices}=summary
@@ -530,8 +535,12 @@ function Transactions({summary,allCats,cards,txns,month,onEdit,onDelete,onToggle
                     </div>
                     {!t.projected&&(
                       <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                        <button onClick={()=>onEdit(t)} className="p-1.5 rounded-lg hover:bg-blue-50 text-gray-300 hover:text-blue-500 cursor-pointer">✏️</button>
-                        <button onClick={()=>onDelete(t.id)} className="p-1.5 rounded-lg hover:bg-red-50 text-gray-300 hover:text-red-500 cursor-pointer">🗑️</button>
+                        <button onClick={()=>onEdit(t)} className="p-1.5 rounded-lg hover:bg-blue-50 text-gray-300 hover:text-blue-500 cursor-pointer" title="Editar">✏️</button>
+                        {t.recurrent&&!t.recurrence_end&&(
+                          <button onClick={()=>{if(confirm("Cancelar recorrência a partir deste mês?")) onCancelRecurrence(t, month)}}
+                            className="p-1.5 rounded-lg hover:bg-orange-50 text-gray-300 hover:text-orange-500 cursor-pointer" title="Cancelar recorrência">🔕</button>
+                        )}
+                        <button onClick={()=>onDelete(t.id)} className="p-1.5 rounded-lg hover:bg-red-50 text-gray-300 hover:text-red-500 cursor-pointer" title="Excluir">🗑️</button>
                       </div>
                     )}
                   </div>
@@ -776,7 +785,7 @@ export default function App(){
   const [editCardId,setEditCardId]=useState(null)
   const [editCatId,setEditCatId]=useState(null)
 
-  const blankTx={type:"expense",description:"",amount:"",category_id:"",date:today(),status:"pending",card_id:"",recurrent:false,recurrence_type:"monthly",installments:"1"}
+  const blankTx={type:"expense",description:"",amount:"",category_id:"",date:today(),status:"pending",card_id:"",recurrent:false,recurrence_type:"monthly",recurrence_end:"",installments:"1"}
   const [txF,setTxF]=useState(blankTx)
   const [cardF,setCardF]=useState({name:"",color:"#8B5CF6",limit_amount:"",closing_day:"",due_day:""})
   const [catF,setCatF]=useState({name:"",color:"#10B981",emoji:"💡",type:"expense"})
@@ -832,7 +841,14 @@ export default function App(){
 
   // ── Transactions
   const openAddTx=()=>{setTxF(blankTx);setEditTxId(null);setTxMod(true)}
-  const openEditTx=t=>{setTxF({...t,amount:String(t.amount),card_id:t.card_id||"",installments:"1"});setEditTxId(t.id);setTxMod(true)}
+  const openEditTx=t=>{setTxF({...t,amount:String(t.amount),card_id:t.card_id||"",installments:"1",recurrence_end:t.recurrence_end||""});setEditTxId(t.id);setTxMod(true)}
+
+  // Cancela recorrência a partir do mês atual (seta recurrence_end = mês anterior)
+  const cancelRecurrence=async(t, fromMonth)=>{
+    const endMonth = shiftMonth(fromMonth, -1) // encerra no mês anterior ao atual
+    const {data}=await supabase.from("transactions").update({recurrence_end: endMonth}).eq("id",t.id).select().single()
+    if(data) setTxns(p=>p.map(x=>x.id===t.id?data:x))
+  }
 
   const saveTx=async()=>{
     if(!txF.description||!txF.amount||!txF.category_id) return
@@ -850,6 +866,7 @@ export default function App(){
         date:d.toISOString().split("T")[0], status:txF.status,
         card_id:txF.card_id||null,
         recurrent:txF.recurrent, recurrence_type:txF.recurrent?txF.recurrence_type:null,
+        recurrence_end:txF.recurrent&&txF.recurrence_end?txF.recurrence_end:null,
         installment_group:installments>1?installmentGroupId:null,
         installment_index:installments>1?i+1:null,
         installment_total:installments>1?installments:null,
@@ -996,7 +1013,7 @@ export default function App(){
           ):(
             <>
               {scr==="dashboard"&&<Dashboard summary={summary} nextSummary={nextSummary} nextMonth={nextMonth} allCats={allCats} cards={cards} onToggle={toggleTx}/>}
-              {scr==="transactions"&&<Transactions summary={summary} allCats={allCats} cards={cards} txns={txns} month={month} onEdit={openEditTx} onDelete={deleteTx} onToggle={toggleTx}/>}
+              {scr==="transactions"&&<Transactions summary={summary} allCats={allCats} cards={cards} txns={txns} month={month} onEdit={openEditTx} onDelete={deleteTx} onToggle={toggleTx} onCancelRecurrence={cancelRecurrence}/>}
               {scr==="cards"&&<CardsScreen cards={cards} txns={txns} allCats={allCats} month={month} onAdd={openAddCard} onEdit={openEditCard} onDelete={deleteCard}/>}
               {scr==="categories"&&<CatsScreen cats={cats} onAdd={openAddCat} onEdit={openEditCat} onDelete={deleteCat}/>}
               {scr==="reports"&&<Reports txns={txns} cards={cards} cats={cats} month={month}/>}
@@ -1059,9 +1076,20 @@ export default function App(){
               </div>
             </label>
             {txF.recurrent&&(
-              <Sel label="Frequência" value={txF.recurrence_type} onChange={e=>setTxF({...txF,recurrence_type:e.target.value})}>
-                {RECURRENCE_OPTS.map(r=><option key={r.value} value={r.value}>{r.label}</option>)}
-              </Sel>
+              <>
+                <Sel label="Frequência" value={txF.recurrence_type} onChange={e=>setTxF({...txF,recurrence_type:e.target.value})}>
+                  {RECURRENCE_OPTS.map(r=><option key={r.value} value={r.value}>{r.label}</option>)}
+                </Sel>
+                <div className="w-full">
+                  <label className="text-xs font-medium text-gray-500 mb-1 block">Encerrar em (opcional)</label>
+                  <input type="month" value={txF.recurrence_end||""} onChange={e=>setTxF({...txF,recurrence_end:e.target.value})}
+                    className="w-full border border-gray-200 rounded-xl px-4 py-2.5 text-sm outline-none focus:border-emerald-400 bg-white"
+                    placeholder="Sem data de encerramento"/>
+                  {txF.recurrence_end&&(
+                    <p className="text-xs text-orange-500 mt-1">⚠️ Última cobrança em {monthLabel(txF.recurrence_end)}</p>
+                  )}
+                </div>
+              </>
             )}
           </div>
           <div className="flex gap-3 pt-1">
