@@ -686,65 +686,135 @@ function CatsScreen({cats,onAdd,onEdit,onDelete}){
 // ── REPORTS ────────────────────────────────────────────────────────────────────
 function Reports({txns,cards,cats,month}){
   const allCats=useMemo(()=>[...cats.expense,...cats.income],[cats])
+
   const chartData=useMemo(()=>Array.from({length:6},(_,i)=>{
     const m=shiftMonth(month,i-5)
-    const s=computeMonthSummary(txns,cards,m)
     const [,mo]=m.split("-").map(Number)
-    return{label:MONTHS[mo-1].slice(0,3),inc:s.incomeReceived,exp:s.expensePaid,bal:s.balance}
+    const s=computeMonthSummary(txns,cards,m)
+    return{
+      label:MONTHS[mo-1].slice(0,3),
+      inc:s.incomeReceived,
+      exp:s.expensePaid,
+      bal:s.balance
+    }
   }),[txns,cards,month])
 
   const curSummary=useMemo(()=>computeMonthSummary(txns,cards,month),[txns,cards,month])
+
   const catData=useMemo(()=>{
     const g={}
-    curSummary.mTxns.filter(t=>t.type==="expense"&&t.status==="paid"&&!t.card_id).forEach(t=>{g[t.category_id]=(g[t.category_id]||0)+t.amount})
-    curSummary.invoices.filter(inv=>inv.allPaid).forEach(inv=>{g[`card_${inv.card.id}`]=(g[`card_${inv.card.id}`]||0)+inv.total})
-    return Object.entries(g).map(([id,v])=>{
-      if(id.startsWith("card_")){const c=cards.find(x=>`card_${x.id}`===id);return{name:`Fatura ${c?.name||"Cartão"}`,value:v,color:c?.color||"#8B5CF6"}}
-      const c=allCats.find(x=>x.id===id);return{name:c?.name||"Outros",value:v,color:c?.color||"#94A3B8"}
-    }).sort((a,b)=>b.value-a.value)
+    // despesas avulsas pagas
+    curSummary.mTxns
+      .filter(t=>t.type==="expense"&&t.status==="paid"&&!t.card_id)
+      .forEach(t=>{ g[t.category_id]=(g[t.category_id]||0)+t.amount })
+    // faturas pagas
+    curSummary.invoices
+      .filter(inv=>inv.allPaid)
+      .forEach(inv=>{ g[`card_${inv.card.id}`]=(g[`card_${inv.card.id}`]||0)+inv.total })
+
+    return Object.entries(g)
+      .map(([id,v])=>{
+        if(id.startsWith("card_")){
+          const c=cards.find(x=>x.id===id.replace("card_",""))
+          return{name:`Fatura ${c?.name||"Cartão"}`,value:v,color:c?.color||"#8B5CF6"}
+        }
+        const c=allCats.find(x=>x.id===id)
+        return{name:c?.name||"Outros",value:v,color:c?.color||"#94A3B8"}
+      })
+      .filter(c=>c.value>0)
+      .sort((a,b)=>b.value-a.value)
   },[curSummary,allCats,cards])
+
   const total=catData.reduce((s,c)=>s+c.value,0)
+
+  const totals={
+    inc: chartData.reduce((s,m)=>s+m.inc,0),
+    exp: chartData.reduce((s,m)=>s+m.exp,0),
+  }
 
   return(
     <div className="space-y-5">
       <p className="text-base font-bold text-gray-900">Relatórios</p>
+
+      {/* Resumo 6 meses */}
+      <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
+        {[
+          {label:"Total Recebido (6m)", value:totals.inc, color:"#10B981", bg:"#ECFDF5", icon:"📈"},
+          {label:"Total Pago (6m)",     value:totals.exp, color:"#EF4444", bg:"#FEF2F2", icon:"📉"},
+          {label:"Saldo Acumulado",     value:totals.inc-totals.exp, color:(totals.inc-totals.exp)>=0?"#10B981":"#EF4444", bg:(totals.inc-totals.exp)>=0?"#ECFDF5":"#FEF2F2", icon:"💰"},
+        ].map(k=>(
+          <div key={k.label} className="bg-white rounded-2xl p-4 shadow-sm">
+            <div className="flex justify-between items-center mb-2">
+              <p className="text-xs font-medium text-gray-400">{k.label}</p>
+              <div className="w-7 h-7 rounded-xl flex items-center justify-center text-sm" style={{background:k.bg}}>{k.icon}</div>
+            </div>
+            <p className="text-lg font-bold" style={{color:k.color}}>{R(k.value)}</p>
+          </div>
+        ))}
+      </div>
+
+      {/* Gráfico barras */}
       <div className="bg-white rounded-2xl p-5 shadow-sm">
         <p className="text-sm font-semibold text-gray-800 mb-4">Receitas vs Despesas — Últimos 6 Meses</p>
-        <ResponsiveContainer width="100%" height={220}>
-          <BarChart data={chartData} barGap={4} barCategoryGap="30%">
-            <XAxis dataKey="label" tick={{fontSize:12,fill:"#9CA3AF"}} axisLine={false} tickLine={false}/>
-            <YAxis tick={{fontSize:11,fill:"#9CA3AF"}} axisLine={false} tickLine={false} tickFormatter={v=>`${(v/1000).toFixed(0)}k`}/>
-            <Tooltip formatter={v=>R(v)} contentStyle={{borderRadius:12,border:"none",boxShadow:"0 4px 20px rgba(0,0,0,0.1)"}}/>
-            <Bar dataKey="inc" name="Receitas" fill="#10B981" radius={[5,5,0,0]}/>
-            <Bar dataKey="exp" name="Despesas" fill="#EF4444" radius={[5,5,0,0]}/>
-          </BarChart>
-        </ResponsiveContainer>
+        {chartData.every(m=>m.inc===0&&m.exp===0)
+          ?<p className="text-sm text-gray-400 text-center py-10">Nenhum dado no período</p>
+          :(
+          <ResponsiveContainer width="100%" height={220}>
+            <BarChart data={chartData} barGap={4} barCategoryGap="30%">
+              <XAxis dataKey="label" tick={{fontSize:12,fill:"#9CA3AF"}} axisLine={false} tickLine={false}/>
+              <YAxis tick={{fontSize:11,fill:"#9CA3AF"}} axisLine={false} tickLine={false} tickFormatter={v=>`${(v/1000).toFixed(0)}k`}/>
+              <Tooltip formatter={v=>R(v)} contentStyle={{borderRadius:12,border:"none",boxShadow:"0 4px 20px rgba(0,0,0,0.1)"}}/>
+              <Bar dataKey="inc" name="Receitas" fill="#10B981" radius={[5,5,0,0]}/>
+              <Bar dataKey="exp" name="Despesas" fill="#EF4444" radius={[5,5,0,0]}/>
+            </BarChart>
+          </ResponsiveContainer>
+        )}
       </div>
+
       <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+        {/* Por categoria */}
         <div className="bg-white rounded-2xl p-5 shadow-sm">
-          <p className="text-sm font-semibold text-gray-800 mb-4">Despesas por Categoria</p>
-          {catData.length===0?<p className="text-sm text-gray-400 text-center py-6">Sem dados</p>:(
+          <p className="text-sm font-semibold text-gray-800 mb-4">Despesas por Categoria — {monthLabel(month)}</p>
+          {catData.length===0
+            ?<p className="text-sm text-gray-400 text-center py-6">Sem despesas pagas neste mês</p>
+            :(
             <div className="space-y-3">
               {catData.map((c,i)=>(
                 <div key={i}>
-                  <div className="flex justify-between text-xs mb-1"><span className="font-medium text-gray-700">{c.name}</span><span className="text-gray-400">{R(c.value)} ({total?Math.round(c.value/total*100):0}%)</span></div>
-                  <div className="w-full h-1.5 rounded-full bg-gray-100"><div className="h-full rounded-full" style={{width:`${total?c.value/total*100:0}%`,background:c.color}}/></div>
+                  <div className="flex justify-between text-xs mb-1">
+                    <span className="font-medium text-gray-700">{c.name}</span>
+                    <span className="text-gray-400">{R(c.value)} ({total?Math.round(c.value/total*100):0}%)</span>
+                  </div>
+                  <div className="w-full h-1.5 rounded-full bg-gray-100">
+                    <div className="h-full rounded-full transition-all" style={{width:`${total?c.value/total*100:0}%`,background:c.color}}/>
+                  </div>
                 </div>
               ))}
             </div>
           )}
         </div>
+
+        {/* Saldo por mês */}
         <div className="bg-white rounded-2xl p-5 shadow-sm">
           <p className="text-sm font-semibold text-gray-800 mb-4">Saldo por Mês</p>
-          <div className="space-y-3">
-            {chartData.map((m,i)=>(
-              <div key={i} className="flex items-center gap-3">
-                <span className="text-xs text-gray-500 w-8">{m.label}</span>
-                <div className="flex-1 h-2 rounded-full bg-gray-100 overflow-hidden"><div className="h-full rounded-full" style={{width:`${Math.min(Math.abs(m.bal)/7000*100,100)}%`,background:m.bal>=0?"#10B981":"#EF4444"}}/></div>
-                <span className="text-xs font-bold w-24 text-right" style={{color:m.bal>=0?"#10B981":"#EF4444"}}>{R(m.bal)}</span>
-              </div>
-            ))}
-          </div>
+          {chartData.every(m=>m.bal===0)
+            ?<p className="text-sm text-gray-400 text-center py-6">Sem dados no período</p>
+            :(
+            <div className="space-y-3">
+              {chartData.map((m,i)=>{
+                const max=Math.max(...chartData.map(x=>Math.abs(x.bal)),1)
+                return(
+                  <div key={i} className="flex items-center gap-3">
+                    <span className="text-xs text-gray-500 w-8 flex-shrink-0">{m.label}</span>
+                    <div className="flex-1 h-2 rounded-full bg-gray-100 overflow-hidden">
+                      <div className="h-full rounded-full transition-all" style={{width:`${Math.min(Math.abs(m.bal)/max*100,100)}%`,background:m.bal>=0?"#10B981":"#EF4444"}}/>
+                    </div>
+                    <span className="text-xs font-bold w-28 text-right flex-shrink-0" style={{color:m.bal>=0?"#10B981":"#EF4444"}}>{R(m.bal)}</span>
+                  </div>
+                )
+              })}
+            </div>
+          )}
         </div>
       </div>
     </div>
@@ -941,16 +1011,16 @@ export default function App(){
     setAiLoad(true); setAiTip("loading")
     const cat=allCats.find(c=>c.id===tx.category_id)
     try{
-      const res=await fetch("https://api.anthropic.com/v1/messages",{
-        method:"POST",
-        headers:{"Content-Type":"application/json","x-api-key":import.meta.env.VITE_ANTHROPIC_KEY,"anthropic-version":"2023-06-01"},
-        body:JSON.stringify({model:"claude-sonnet-4-20250514",max_tokens:200,
-          system:"Consultor financeiro simpático. Responda em PT-BR, 2-3 frases curtas, sem markdown.",
-          messages:[{role:"user",content:`Lançamento: ${R(tx.amount)} em "${cat?.name}". Receita mês: ${R(summary.incomeReceived)}. Despesas: ${R(summary.expensePaid)}. ${tx.recurrent?"É recorrente.":""} Dê uma dica financeira.`}]})
+      const { data, error } = await supabase.functions.invoke("ai-tip", {
+        body: {
+          prompt: `Lançamento: ${R(tx.amount)} em "${cat?.name}". Receita mês: ${R(summary.incomeReceived)}. Despesas: ${R(summary.expensePaid)}. ${tx.recurrent?"É recorrente.":""} Dê uma dica financeira curta e prática.`
+        }
       })
-      const data=await res.json()
-      setAiTip(data.content?.[0]?.text||"Continue acompanhando suas finanças!")
-    }catch{ setAiTip("Registrar todos os gastos é o primeiro passo para o controle financeiro!") }
+      if(error) throw error
+      setAiTip(data?.tip || "Continue acompanhando suas finanças!")
+    } catch(e) {
+      setAiTip("Registrar todos os gastos é o primeiro passo para o controle financeiro!")
+    }
     setAiLoad(false)
   }
 
