@@ -102,7 +102,25 @@ function getAllCardInvoices(allTxns, cards) {
   return Object.values(map)
 }
 
-// ── FUNÇÃO CENTRAL: resume um mês (usada por Dashboard E Projeção) ─────────────
+// ── SALDO ACUMULADO: soma todos os meses até o mês atual ──────────────────────
+function computeAccumulatedBalance(allTxns, cards, upToMonth) {
+  // Pega o mês mais antigo que existe nos lançamentos
+  const months = allTxns
+    .filter(t => t.date)
+    .map(t => t.date.slice(0,7))
+    .sort()
+  if (months.length === 0) return 0
+
+  const firstMonth = months[0]
+  let accumulated = 0
+  let m = firstMonth
+  while (m <= upToMonth) {
+    const s = computeMonthSummary(allTxns, cards, m)
+    accumulated += s.incomeReceived - s.expensePaid
+    m = shiftMonth(m, 1)
+  }
+  return accumulated
+}
 function computeMonthSummary(allTxns, cards, month) {
   const mTxns   = getMonthTxns(allTxns, month)
   const invoices = getAllCardInvoices(allTxns, cards).filter(inv => inv.invMonth === month)
@@ -244,7 +262,7 @@ function AuthScreen(){
 }
 
 // ── DASHBOARD ──────────────────────────────────────────────────────────────────
-function Dashboard({summary,nextSummary,nextMonth,allCats,cards,onToggle}){
+function Dashboard({summary,nextSummary,nextMonth,allCats,cards,onToggle,accumulatedBalance}){
   const {incomeReceived,expensePaid,balance,pendingAvulso,pendingInvoices,pendingIncome,pendingTotal,previewItems:currPreview} = summary
   const getCat = id => allCats.find(c=>c.id===id)
 
@@ -271,10 +289,10 @@ function Dashboard({summary,nextSummary,nextMonth,allCats,cards,onToggle}){
   }),[summary,cards])
 
   const kpis=[
-    {label:"Receitas",    value:incomeReceived, color:"#10B981",bg:"#ECFDF5",icon:"📈"},
-    {label:"Despesas",    value:expensePaid,    color:"#EF4444",bg:"#FEF2F2",icon:"📉"},
-    {label:"Saldo Atual", value:balance,        color:balance>=0?"#10B981":"#EF4444",bg:balance>=0?"#ECFDF5":"#FEF2F2",icon:"💰"},
-    {label:"A Pagar",     value:pendingTotal,   color:"#F59E0B",bg:"#FFFBEB",icon:"⏳"},
+    {label:"Receitas do Mês",    value:incomeReceived, color:"#10B981",bg:"#ECFDF5",icon:"📈"},
+    {label:"Despesas do Mês",    value:expensePaid,    color:"#EF4444",bg:"#FEF2F2",icon:"📉"},
+    {label:"Saldo do Mês",       value:balance,        color:balance>=0?"#10B981":"#EF4444",bg:balance>=0?"#ECFDF5":"#FEF2F2",icon:"📅"},
+    {label:"A Pagar",            value:pendingTotal,   color:"#F59E0B",bg:"#FFFBEB",icon:"⏳"},
   ]
 
   return(
@@ -290,6 +308,25 @@ function Dashboard({summary,nextSummary,nextMonth,allCats,cards,onToggle}){
             <p className="text-xl font-bold" style={{color:k.color}}>{R(k.value)}</p>
           </div>
         ))}
+      </div>
+
+      {/* Saldo acumulado */}
+      <div className="bg-white rounded-2xl p-5 shadow-sm flex items-center justify-between">
+        <div className="flex items-center gap-3">
+          <div className="w-10 h-10 rounded-xl flex items-center justify-center text-xl" style={{background:accumulatedBalance>=0?"#ECFDF5":"#FEF2F2"}}>
+            💰
+          </div>
+          <div>
+            <p className="text-xs font-medium text-gray-400">Saldo Acumulado</p>
+            <p className="text-xs text-gray-300">Soma de todos os meses até agora</p>
+          </div>
+        </div>
+        <div className="text-right">
+          <p className="text-2xl font-bold" style={{color:accumulatedBalance>=0?"#10B981":"#EF4444"}}>{R(accumulatedBalance)}</p>
+          <p className="text-xs mt-0.5" style={{color:accumulatedBalance>=0?"#10B981":"#EF4444"}}>
+            {accumulatedBalance>=0?"✅ Positivo":"⚠️ Negativo"}
+          </p>
+        </div>
       </div>
 
       {/* Projeção próximo mês */}
@@ -868,6 +905,7 @@ export default function App(){
   const summary=useMemo(()=>computeMonthSummary(txns,cards,month),[txns,cards,month])
   const nextMonth=useMemo(()=>shiftMonth(month,1),[month])
   const nextSummary=useMemo(()=>computeMonthSummary(txns,cards,nextMonth),[txns,cards,nextMonth])
+  const accumulatedBalance=useMemo(()=>computeAccumulatedBalance(txns,cards,month),[txns,cards,month])
 
   useEffect(()=>{
     supabase.auth.getSession().then(({data:{session}})=>{
@@ -1082,7 +1120,7 @@ export default function App(){
             <div className="flex items-center justify-center h-64"><p className="text-gray-400 animate-pulse">Carregando dados...</p></div>
           ):(
             <>
-              {scr==="dashboard"&&<Dashboard summary={summary} nextSummary={nextSummary} nextMonth={nextMonth} allCats={allCats} cards={cards} onToggle={toggleTx}/>}
+              {scr==="dashboard"&&<Dashboard summary={summary} nextSummary={nextSummary} nextMonth={nextMonth} allCats={allCats} cards={cards} onToggle={toggleTx} accumulatedBalance={accumulatedBalance}/>}
               {scr==="transactions"&&<Transactions summary={summary} allCats={allCats} cards={cards} txns={txns} month={month} onEdit={openEditTx} onDelete={deleteTx} onToggle={toggleTx} onCancelRecurrence={cancelRecurrence}/>}
               {scr==="cards"&&<CardsScreen cards={cards} txns={txns} allCats={allCats} month={month} onAdd={openAddCard} onEdit={openEditCard} onDelete={deleteCard}/>}
               {scr==="categories"&&<CatsScreen cats={cats} onAdd={openAddCat} onEdit={openEditCat} onDelete={deleteCat}/>}
